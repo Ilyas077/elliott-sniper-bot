@@ -5,8 +5,8 @@ import os
 import time
 from datetime import datetime
 
-# ТВОИ ОРИГИНАЛЬНЫЕ ТОКЕНЫ И ГЛАВНЫЙ ЧАТ
-TG_TOKEN = "9105916544:AAGyQAXffLgHNGcKMjJMHH43qCvvjFLHIPw"
+# ТВОЙ НОВЫЙ ЧИСТЫЙ ТОКЕН ИЗ TELEGRAM
+TG_TOKEN = "9255233645:AAEyzaiaJbfUxSq0W0-E3jsi6ZHXig-F5h0"
 TG_CHAT_ID = "531386055"
 
 MONETS = {'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT', 'SOL': 'SOLUSDT'}
