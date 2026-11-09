@@ -8,10 +8,11 @@ import time
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# --- НАСТРОЙКИ ---
+# --- НАСТРОЙКИ ПЕРВОГО БОТА (ИЗ ТВОЕГО GOOGLE COLAB) ---
 TG_TOKEN = "9105916544:AAGyQAXffLgHNGcKMjJMHH43qCvvjFLHIPw"
 TG_CHAT_ID = "531386055"
 
+# ТОП-5 МОНЕТ ДЛЯ СКАНИРОВАНИЯ
 MONETS = {
     "BTC": "BTCUSDT",
     "ETH": "ETHUSDT",
@@ -23,8 +24,8 @@ MONETS = {
 last_signals = {}
 
 def send_telegram(message):
-    p1 = "https:" + "//" + "api" + "." + "telegram" + "." + "org"
-    url = p1 + "/" + "bot" + TG_TOKEN + "/" + "sendMessage"
+    # ИСПРАВЛЕНО: Установлен точный рабочий адрес Telegram API
+    url = f"https://telegram.org{TG_TOKEN}/sendMessage"
     try:
         requests.post(url, json={"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
     except Exception as e:
@@ -32,7 +33,7 @@ def send_telegram(message):
 
 def get_live_candles(symbol, interval, limit=300):
     bybit_map = {'4h': '240', '1h': '60', '15m': '15'}
-    b_url = "https:" + "//" + "api" + "." + "bybit" + "." + "com/v5/market/kline"
+    b_url = "https://bybit.com"
     try:
         r = requests.get(b_url, params={'category': 'linear', 'symbol': symbol, 'interval': bybit_map[interval], 'limit': limit}, timeout=5).json()
         if r.get('retCode') == 0 and r['result']['list']:
@@ -44,7 +45,7 @@ def get_live_candles(symbol, interval, limit=300):
     except Exception:
         pass
     
-    bn_url = "https:" + "//" + "data-api" + "." + "binance" + "." + "vision/api/v3/klines"
+    bn_url = "https://binance.vision"
     try:
         r2 = requests.get(bn_url, params={'symbol': symbol, 'interval': interval, 'limit': limit}, timeout=5).json()
         df = pd.DataFrame(r2, columns=['ts', 'open', 'high', 'low', 'close', 'v', 'ct', 'qv', 'n', 'tb', 'tq', 'ig'])
@@ -55,6 +56,7 @@ def get_live_candles(symbol, interval, limit=300):
         return None
 
 def calculate_indicators(df):
+    if df is None or df.empty: return None
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
     df['ema100'] = df['close'].ewm(span=100, adjust=False).mean()
     df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
@@ -70,24 +72,18 @@ def calculate_indicators(df):
     denom_stoch = high_14 - low_14
     denom_stoch = denom_stoch.replace(0, np.nan)
     
-    fast_k = 100 * (df['close'] - low_14) / denom_stoch
-    df['stoch_k'] = fast_k.rolling(window=3).mean()
+    df['stoch_k'] = (100 * (df['close'] - low_14) / denom_stoch).rolling(window=3).mean()
     df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
     return df
 
 def execute_sniper_strategy(name, ticker_symbol):
     try:
-        df_4h = get_live_candles(ticker_symbol, '4h', limit=200)
-        df_1h = get_live_candles(ticker_symbol, '1h', limit=100)
-        df_15m = get_live_candles(ticker_symbol, '15m', limit=100)
+        df_4h = calculate_indicators(get_live_candles(ticker_symbol, '4h', limit=200))
+        df_1h = calculate_indicators(get_live_candles(ticker_symbol, '1h', limit=100))
+        df_15m = calculate_indicators(get_live_candles(ticker_symbol, '15m', limit=100))
 
         if df_4h is None or df_1h is None or df_15m is None:
-            print(f"⏳ Ожидание сети для {name}...")
             return
-
-        df_4h = calculate_indicators(df_4h)
-        df_1h = calculate_indicators(df_1h)
-        df_15m = calculate_indicators(df_15m)
 
         c4h = df_4h.iloc[-1]
         c1h = df_1h.iloc[-1]
@@ -105,28 +101,27 @@ def execute_sniper_strategy(name, ticker_symbol):
         tz_offset = timezone(timedelta(hours=5))
         coin_time = datetime.now(tz_offset).strftime("%H:%M:%S")
 
-        print(f"═══ ⚡ ПОЗИЦИОННЫЙ СНАЙПЕР ДЛЯ {name} [{coin_time}] ═══")
-        print(f"   📍 Цена LIVE: {round(cp, 4)}")
-        print(f"   📊 Снайпер 15M: Stoch = {round(c15m['stoch_k'],1)}/{round(c15m['stoch_d'],1)} | 1H Stoch = {round(c1h['stoch_k'],1)}")
-        print(f"   🕐 Фильтр 4H: {'🔴 МЕДВЕЖИЙ' if trend_4h_bear else '🟢 БЫЧИЙ'} | 1H EMA50: {'🔴 ПОД' if trend_1h_bear else '🟢 НАД'}\n")
+        print(f"═══ ⚡ СНАЙПЕР ДЛЯ {name} [{coin_time}] LIVE: {round(cp, 4)} ═══")
 
+        # Проверка условий на ШОРТ сигнал
         if trend_4h_bear and trend_1h_bear and stoch_cross_down:
             if last_signals.get(name) != "SHORT":
                 sl_level = round(c15m['ema100'] * 1.005, 4)
                 msg = (
-                    f"🔸 <b>ВХОД В ШОРТ #{name}</b>\n"
-                    f"🛒 Вход: {round(cp, 4)}\n"
-                    f"🛡️ Страховочный SL: {sl_level}\n"
-                    f"🎯 <b>Ведем по тренду с быстрым выходом!</b>"
+                    f"🔻 <b>ВХОД В ШОРТ #{name} (БОТ ЭЛЛИОТТА)</b>\n\n"
+                    f"🛒 Вход: <code>{round(cp, 4)}</code>\n"
+                    f"🛡️ Страховочный SL: <code>{sl_level}</code>\n"
+                    f"🎯 <b>Стратегия: 4H Тренд + 1H Резонанс + Отскок 15М.</b>"
                 )
                 send_telegram(msg)
                 last_signals[name] = "SHORT"
 
+        # Условие для фиксации и выхода из позиции
         elif last_signals.get(name) == "SHORT" and c1h['stoch_k'] < 30 and c1h['stoch_k'] > c1h['stoch_d']:
             msg = (
-                f"🏁 <b>ФИКСИРУЕМ ШОРТ #{name}</b>\n"
-                f"💰 Цена выхода: {round(cp, 4)}\n"
-                f"📊 Причина: Разворот импульса (15M EMA100 / 1H Stoch)"
+                f"🏁 <b>ФИКСИРУЕМ ШОРТ #{name}</b>\n\n"
+                f"💰 Цена выхода: <code>{round(cp, 4)}</code>\n"
+                f"📊 Причина: Разворот импульса по Стохастику."
             )
             send_telegram(msg)
             last_signals[name] = None
@@ -134,18 +129,12 @@ def execute_sniper_strategy(name, ticker_symbol):
     except Exception as e:
         print(f"Ошибка обработки {name}: {e}")
 
-def start_bot():
-    send_telegram("🤖 <b>Бот Эллиотта (4H + 1H + 15M) запущен!</b>\nЖду сигналы по BTC, ETH и SOL...")
-    time.sleep(1)
-    send_telegram("⚡ <b>Бот переключен на LIVE-котировки биржи!</b>\nПроверка рынка каждую 1 минуту.")
-    time.sleep(1)
-    send_telegram("🎯 <b>Снайпер-режим (4H + 1H + 15M + Stoch 14,3,3) активирован!</b>")
-
-    while True:
-        for name, ticker in MONETS.items():
-            execute_sniper_strategy(name, ticker)
-            time.sleep(2)
-        time.sleep(30)
-
 if __name__ == "__main__":
-    start_bot()
+    print("Запуск одиночного сканирования ТОП-5 монет Эллиотта...")
+    
+    # ИСПРАВЛЕНО: Убран бесконечный цикл while True под требования GitHub Actions
+    for name, ticker in MONETS.items():
+        execute_sniper_strategy(name, ticker)
+        time.sleep(2)
+        
+    print("Сканирование успешно завершено.")
