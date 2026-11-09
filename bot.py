@@ -1,15 +1,17 @@
-import time
-import requests
+import warnings
+from datetime import datetime, timezone, timedelta
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-from IPython.display import clear_output
+import requests
+import time
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # --- НАСТРОЙКИ ---
 TG_TOKEN = "9105916544:AAGyQAXffLgHNGcKMjJMHH43qCvvjFLHIPw"
 TG_CHAT_ID = "531386055"
 
-# ТОП-5 МОНЕТ (БЕЗ ЗАВИСАНИЙ И БЛОКИРОВОК СЕТИ)
 MONETS = {
     "BTC": "BTCUSDT",
     "ETH": "ETHUSDT",
@@ -94,22 +96,20 @@ def execute_sniper_strategy(name, ticker_symbol):
 
         cp = c15m['close']
 
-        # Вчерашняя многоэкранная фильтрация
         trend_4h_bear = c4h['close'] < c4h['ema200']
         trend_1h_bear = c1h['close'] < c1h['ema50']
         stoch_cross_down = (c15m['stoch_k'] > 75 and 
                             c15m['stoch_k'] < c15m['stoch_d'] and 
                             p15m['stoch_k'] >= p15m['stoch_d'])
 
-        # Четкое локальное время для каждой монеты
-        coin_time = (datetime.utcnow() + timedelta(hours=5)).strftime("%H:%M:%S")
+        tz_offset = timezone(timedelta(hours=5))
+        coin_time = datetime.now(tz_offset).strftime("%H:%M:%S")
 
         print(f"═══ ⚡ ПОЗИЦИОННЫЙ СНАЙПЕР ДЛЯ {name} [{coin_time}] ═══")
         print(f"   📍 Цена LIVE: {round(cp, 4)}")
         print(f"   📊 Снайпер 15M: Stoch = {round(c15m['stoch_k'],1)}/{round(c15m['stoch_d'],1)} | 1H Stoch = {round(c1h['stoch_k'],1)}")
         print(f"   🕐 Фильтр 4H: {'🔴 МЕДВЕЖИЙ' if trend_4h_bear else '🟢 БЫЧИЙ'} | 1H EMA50: {'🔴 ПОД' if trend_1h_bear else '🟢 НАД'}\n")
 
-        # Сигнал на Вход
         if trend_4h_bear and trend_1h_bear and stoch_cross_down:
             if last_signals.get(name) != "SHORT":
                 sl_level = round(c15m['ema100'] * 1.005, 4)
@@ -122,7 +122,6 @@ def execute_sniper_strategy(name, ticker_symbol):
                 send_telegram(msg)
                 last_signals[name] = "SHORT"
 
-        # Сигнал на Фиксацию
         elif last_signals.get(name) == "SHORT" and c1h['stoch_k'] < 30 and c1h['stoch_k'] > c1h['stoch_d']:
             msg = (
                 f"🏁 <b>ФИКСИРУЕМ ШОРТ #{name}</b>\n"
@@ -136,7 +135,6 @@ def execute_sniper_strategy(name, ticker_symbol):
         print(f"Ошибка обработки {name}: {e}")
 
 def start_bot():
-    # Ваши оригинальные три стартовых сообщения
     send_telegram("🤖 <b>Бот Эллиотта (4H + 1H + 15M) запущен!</b>\nЖду сигналы по BTC, ETH и SOL...")
     time.sleep(1)
     send_telegram("⚡ <b>Бот переключен на LIVE-котировки биржи!</b>\nПроверка рынка каждую 1 минуту.")
@@ -144,10 +142,10 @@ def start_bot():
     send_telegram("🎯 <b>Снайпер-режим (4H + 1H + 15M + Stoch 14,3,3) активирован!</b>")
 
     while True:
-        clear_output(wait=True)
         for name, ticker in MONETS.items():
             execute_sniper_strategy(name, ticker)
-            time.sleep(2) # Плавная задержка 2 секунды, чтобы Bybit не банил
+            time.sleep(2)
         time.sleep(30)
 
-start_bot()
+if __name__ == "__main__":
+    start_bot()
