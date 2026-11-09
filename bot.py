@@ -2,13 +2,13 @@ import pandas as pd
 import numpy as np
 import requests
 import os
+import time
 from datetime import datetime
 
-# ТВОИ ПЕРВЫЕ ОРИГИНАЛЬНЫЕ ТОКЕНЫ И ГЛАВНЫЙ ЧАТ
+# ТВОИ ОРИГИНАЛЬНЫЕ ТОКЕНЫ И ГЛАВНЫЙ ЧАТ
 TG_TOKEN = "9105916544:AAGyQAXffLgHNGcKMjJMHH43qCvvjFLHIPw"
 TG_CHAT_ID = "531386055"
 
-# ТОЛЬКО ТРИ ГЛАВНЫЕ МОНЕТЫ
 MONETS = {'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT', 'SOL': 'SOLUSDT'}
 WINDOW_4H = 4   
 WINDOW_15M = 6  
@@ -21,7 +21,7 @@ def send_telegram(message):
         print(f"Ошибка TG: {e}")
 
 def get_live_candles(symbol, interval, limit=300):
-    bybit_map = {'4h': '240', '1h': '60', '15m': '15'}
+    bybit_map = {'4h': '240', '15m': '15'}
     url = "https://bybit.com"
     try:
         r = requests.get(url, params={'category': 'linear', 'symbol': symbol, 'interval': bybit_map[interval], 'limit': limit}, timeout=10).json()
@@ -29,7 +29,6 @@ def get_live_candles(symbol, interval, limit=300):
             rows = r['result']['list'][::-1]
             df = pd.DataFrame(rows, columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'turn'])
             for c in ['open', 'high', 'low', 'close']: df[c] = df[c].astype(float)
-            df['datetime'] = pd.to_datetime(df['ts'].astype(int), unit='ms') + pd.Timedelta(hours=5)
             return df
     except Exception:
         pass
@@ -38,7 +37,6 @@ def get_live_candles(symbol, interval, limit=300):
 def calculate_indicators(df):
     if df is None: return None
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
-    df['ema100'] = df['close'].ewm(span=100, adjust=False).mean()
     df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
     
     delta = df['close'].diff()
@@ -48,61 +46,56 @@ def calculate_indicators(df):
     
     low_14 = df['low'].rolling(window=14).min()
     high_14 = df['high'].rolling(window=14).max()
-    fast_k = 100 * (df['close'] - low_14) / (high_14 - low_14)
+    fast_k = 100 * (df['close'] - low_14) / (high_14 - low_14 + 0.00001)
     df['stoch_k'] = fast_k.rolling(window=3).mean()
     df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
     return df
 
-def intraday_market_analysis(name, ticker_symbol):
-    try:
-        # 1. ЗАГРУЗКА ИСТОРИЧЕСКИХ ТАЙМФРЕЙМОВ И ИНДИКАТОРОВ
-        df_4h = calculate_indicators(get_live_candles(ticker_symbol, '4h', limit=150))
-        df_1h = calculate_indicators(get_live_candles(ticker_symbol, '1h', limit=150))
-        df_15m = calculate_indicators(get_live_candles(ticker_symbol, '15m', limit=200))
-        
-        if df_4h is None or df_1h is None or df_15m is None: return
-        
-        c4h = df_4h.iloc[-1]
-        c1h = df_1h.iloc[-1]
-        c15 = df_15m.iloc[-1]
-        cp = c15['close']
-        
-        # СТРОГИЙ СТАРШИЙ ФИЛЬТР EMA 200 НА 4H
-        above_4h_200 = c4h['close'] > c4h['ema200']
-        under_4h_200 = c4h['close'] < c4h['ema200']
-        
-        # Положение цены на 15М относительно Скользящих Веера
-        e_bull = (cp > c15['ema50']) and (c15['ema50'] > c15['ema100'] > c15['ema200'])
-        e_bear = (cp < c15['ema50']) and (c15['ema50'] < c15['ema100'] < c15['ema200'])
-        
-        sk15, sd15 = c15['stoch_k'], c15['stoch_d']
+def get_wave_pivots(df, window):
+    pivots = []
+    for i in range(window, len(df) - window):
+        is_high = df['high'].iloc[i] == df['high'].iloc[i-window:i+window+1].max()
+        is_low = df['low'].iloc[i] == df['low'].iloc[i-window:i+window+1].min()
+        if is_high: pivots.append({'type': 'HIGH', 'price': df['high'].iloc[i]})
+        elif is_low: pivots.append({'type': 'LOW', 'price': df['low'].iloc[i]})
+    clean = []
+    for p in pivots:
+        if not clean or clean[-1]['type'] != p['type']: clean.append(p)
+    return clean
 
-        # 2. ПОИСК ТОЧЕК ВХОДА (Режим ТРЕНД-СНАЙПЕР: отскок от EMA50)
-        # ЛОНГ СИГНАЛ
-        if above_4h_200 and e_bull and (abs(cp - c15['ema50']) / c15['ema50'] < 0.003) and (sk15 < 40 and sk15 > sd15):
-            sl = round(c15['ema100'] * 0.995, 2)
-            send_telegram(f"🍏 <b>ВХОД В ЛОНГ #{name}</b>\n\n"
-                          f"📈 Отскок от трендовой линии 15M EMA50!\n"
-                          f"🛒 Вход: <code>{round(cp, 2)}</code>\n"
-                          f"🛡️ Страховочный SL: <code>{sl}</code>\n\n"
-                          f"⚡ <b>АКТИВИРОВАН БЫСТРЫЙ ТРЕЙЛИНГ-ВЫХОД!</b>\n"
-                          f"Бот держит весь тренд, переводит в безубыток при +1.5% и закрывает сделку на развороте 15M EMA100 / 1H Stoch.")
-            return
-
-        # ШОРТ СИГНАЛ (Тот самый, который косил прибыль)
-        elif under_4h_200 and e_bear and (abs(cp - c15['ema50']) / c15['ema50'] < 0.003) and (sk15 > 60 and sk15 < sd15):
-            sl = round(c15['ema100'] * 1.005, 2)
-            send_telegram(f"🔴 <b>ВХОД В ШОРТ #{name}</b>\n\n"
-                          f"📉 Идеальный отбой от линии 15M EMA50!\n"
-                          f"🛒 Вход: <code>{round(cp, 2)}</code>\n"
-                          f"🛡️ Страховочный SL: <code>{sl}</code>\n\n"
-                          f"⚡ <b>АКТИВИРОВАН БЫСТРЫЙ ТРЕЙЛИНГ-ВЫХОД!</b>\n"
-                          f"Бот держит весь тренд, переводит в безубыток при +1.5% и закрывает сделку на развороте 15M EMA100 / 1H Stoch.")
-            return
-            
-    except Exception as e:
-        print(f"Ошибка {name}: {e}")
+def check_elliott_axioms(w, st='BULL'):
+    if len(w) < 6: return False
+    p0, p1, p2, p3, p4, p5 = w[-6], w[-5], w[-4], w[-3], w[-2], w[-1]
+    if st == 'BULL':
+        w2_ok = p2['price'] > p0['price']
+        w3_ok = (p3['price'] - p2['price']) > (p1['price'] - p0['price']) or (p3['price'] - p2['price']) > (p5['price'] - p4['price'])
+        w4_ok = p4['price'] > p1['price']
+    else:
+        w2_ok = p2['price'] < p0['price']
+        w3_ok = (p2['price'] - p3['price']) > (p0['price'] - p1['price']) or (p2['price'] - p3['price']) > (p4['price'] - p5['price'])
+        w4_ok = p4['price'] < p1['price']
+    return w2_ok and w3_ok and w4_ok
 
 if __name__ == "__main__":
     for name, symbol in MONETS.items():
-        intraday_market_analysis(name, symbol)
+        df_4h = calculate_indicators(get_live_candles(symbol, '4h'))
+        df_15m = calculate_indicators(get_live_candles(symbol, '15m'))
+        if df_4h is None or df_15m is None: continue
+        
+        above_4h_ema = df_4h.iloc[-1]['close'] > df_4h.iloc[-1]['ema200']
+        piv_15m = get_wave_pivots(df_15m, WINDOW_15M)
+        if len(piv_15m) < 6: continue
+        
+        w15 = piv_15m[-6:]
+        st_mode = 'BULL' if above_4h_ema else 'BEAR'
+        
+        if check_elliott_axioms(w15, st_mode):
+            cp = df_15m.iloc[-1]['close']
+            if st_mode == 'BULL':
+                sl = round(w15[-1]['price'] * 0.995, 2)
+                tp = round(cp * 1.015, 2)
+                send_telegram(f"🍏 <b>СНАЙПЕР-ЛОНГ #{name} (Волна C)</b>\n\n🛒 Вход: <code>{round(cp, 2)}</code>\n🛡️ SL: <code>{sl}</code>\n🎯 TP: <code>{tp}</code>")
+            else:
+                sl = round(w15[-1]['price'] * 1.005, 2)
+                tp = round(cp * 0.985, 2)
+                send_telegram(f"🍎 <b>СНАЙПЕР-ШОРТ #{name} (Волна C)</b>\n\n🛒 Вход: <code>{round(cp, 2)}</code>\n🛡️ SL: <code>{sl}</code>\n🎯 TP: <code>{tp}</code>")
