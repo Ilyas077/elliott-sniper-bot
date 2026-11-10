@@ -1,3 +1,4 @@
+import os
 import time
 import datetime
 import telebot
@@ -18,7 +19,6 @@ SYMBOLS = [
 
 bot = telebot.TeleBot(TG_TOKEN)
 
-# Заголовки браузера, чтобы биржи не считали запрос обычным скриптом
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "application/json"
@@ -45,7 +45,7 @@ def calc_stoch(df, k=14, d=3, smooth_k=3):
     stoch_d = stoch_k.rolling(window=d).mean()
     return stoch_k, stoch_d
 
-# --- 3. ПОЛУЧЕНИЕ ДАННЫХ ДЛЯ СЕРВЕРОВ США (KRAKEN + KUCOIN + CRYPTOCOMPARE) ---
+# --- 3. ПОЛУЧЕНИЕ ДАННЫХ С БИРЖИ (KRAKEN + KUCOIN + CRYPTOCOMPARE) ---
 def get_market_klines(symbol, interval, limit=200):
     coin = symbol.replace("USDT", "")
     
@@ -59,16 +59,17 @@ def get_market_klines(symbol, interval, limit=200):
     try:
         res = requests.get(url_kraken, params=params_kraken, headers=HEADERS, timeout=10).json()
         if not res.get('error') and res.get('result'):
-            pair_key = [k for k in res['result'].keys() if k != 'last'][0]
-            data = res['result'][pair_key][-limit:]
-            df = pd.DataFrame([row[:6] for row in data], columns=['timestamp', 'open', 'high', 'low', 'close', 'vwap'])
-            for col in ['open', 'high', 'low', 'close']:
-                df[col] = df[col].astype(float)
-            return df
-    except Exception:
-        pass
+            keys = [k for k in res['result'].keys() if k != 'last']
+            if keys:
+                data = res['result'][keys[0]][-limit:]
+                df = pd.DataFrame([row[:6] for row in data], columns=['timestamp', 'open', 'high', 'low', 'close', 'vwap'])
+                for col in ['open', 'high', 'low', 'close']:
+                    df[col] = df[col].astype(float)
+                return df
+    except Exception as e:
+        print(f"Kraken ({symbol}): {e}")
 
-    # Канал 2: Резерв через KuCoin (для альткоинов, которых нет на Kraken)
+    # Канал 2: Резерв через KuCoin
     kucoin_pair = f"{coin}-USDT"
     kucoin_type = "1hour" if interval == "60" else "15min"
     url_kucoin = "https://kucoin.com"
@@ -83,8 +84,25 @@ def get_market_klines(symbol, interval, limit=200):
             for col in ['open', 'high', 'low', 'close']:
                 df[col] = df[col].astype(float)
             return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"KuCoin ({symbol}): {e}")
+
+    # Канал 3: Резерв через CryptoCompare
+    endpoint = "https://cryptocompare.com" if interval == "60" else "https://cryptocompare.com"
+    aggregate = 1 if interval == "60" else 15
+    params_cc = {"fsym": coin, "tsym": "USDT", "limit": limit, "aggregate": aggregate}
+    
+    try:
+        res_cc = requests.get(endpoint, params=params_cc, headers=HEADERS, timeout=10).json()
+        if res_cc.get('Response') == 'Success':
+            list_data = res_cc['Data']['Data']
+            df = pd.DataFrame(list_data)[['time', 'open', 'high', 'low', 'close', 'volumeto']].copy()
+            df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            for col in ['open', 'high', 'low', 'close']:
+                df[col] = df[col].astype(float)
+            return df
+    except Exception as e:
+        print(f"CryptoCompare ({symbol}): {e}")
         
     return None
 
@@ -177,9 +195,10 @@ for symbol in SYMBOLS:
         bot.send_message(TG_CHAT_ID, msg, parse_mode="Markdown")
     time.sleep(1)
 
-# Отправляем отчет раз в час (в начале часа), чтобы подтвердить работу 24/7
 current_minute = datetime.datetime.now().minute
-if signals_found == 0 and current_minute < 15:
+is_manual_run = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+
+if signals_found == 0 and (current_minute < 15 or is_manual_run):
     pulse_msg = (
         f"📡 **Пульс рынка (GitHub 24/7)**\n"
         f"🚂 **BTC (${btc_price}):** {btc_text}\n\n"
