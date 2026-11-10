@@ -61,7 +61,7 @@ def get_market_klines(symbol, interval, limit=200):
         if not res.get('error') and res.get('result'):
             keys = [k for k in res['result'].keys() if k != 'last']
             if keys:
-                first_key = keys[0]
+                first_key = next(iter(keys))
                 data = res['result'][first_key][-limit:]
                 df = pd.DataFrame([row[:6] for row in data], columns=['timestamp', 'open', 'high', 'low', 'close', 'vwap'])
                 for col in ['open', 'high', 'low', 'close']:
