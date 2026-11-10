@@ -45,40 +45,42 @@ def calc_stoch(df, k=14, d=3, smooth_k=3):
     stoch_d = stoch_k.rolling(window=d).mean()
     return stoch_k, stoch_d
 
-# --- 3. ПОЛУЧЕНИЕ ДАННЫХ С БИРЖИ (KRAKEN + BINANCE VISION) ---
+# --- 3. ПОЛУЧЕНИЕ ДАННЫХ С БИРЖИ (ЗАЩИЩЕННАЯ СБОРКА АДРЕСОВ) ---
 def get_market_klines(symbol, interval, limit=200):
     coin = symbol.replace("USDT", "")
     
-    # Канал 1: Биржа Kraken (Статус 200 подтвержден тестом)
+    # Канал 1: Биржа Kraken (сборка пути по частям)
     kraken_coin = "XBT" if coin == "BTC" else coin
     kraken_pair = f"{kraken_coin}USD"
     kraken_interval = 60 if interval == "60" else 15
-    url_kraken = "https://kraken.com"
+    url_kraken = "/".join(["https://kraken.com", "0", "public", "OHLC"])
     params_kraken = {"pair": kraken_pair, "interval": kraken_interval}
     
     try:
-        res = requests.get(url_kraken, params=params_kraken, headers=HEADERS, timeout=10).json()
-        if not res.get('error') and res.get('result'):
-            keys = [k for k in res['result'].keys() if k != 'last']
-            if keys:
-                first_key = next(iter(keys))
-                data = res['result'][first_key][-limit:]
-                df = pd.DataFrame([row[:6] for row in data], columns=['timestamp', 'open', 'high', 'low', 'close', 'vwap'])
-                for col in ['open', 'high', 'low', 'close']:
-                    df[col] = df[col].astype(float)
-                return df
+        r = requests.get(url_kraken, params=params_kraken, headers=HEADERS, timeout=10)
+        if r.status_code == 200 and r.text.strip():
+            res = r.json()
+            if not res.get('error') and res.get('result'):
+                keys = [k for k in res['result'].keys() if k != 'last']
+                if keys:
+                    first_key = next(iter(keys))
+                    data = res['result'][first_key][-limit:]
+                    df = pd.DataFrame([row[:6] for row in data], columns=['timestamp', 'open', 'high', 'low', 'close', 'vwap'])
+                    for col in ['open', 'high', 'low', 'close']:
+                        df[col] = df[col].astype(float)
+                    return df
     except Exception as e:
         print(f"Kraken ({symbol}): {e}")
 
-    # Канал 2: Зеркало Binance Vision (для монет, которых нет на Kraken)
+    # Канал 2: Зеркало Binance Vision (сборка пути по частям)
     bar = "1h" if interval == "60" else "15m"
-    url_vision = "https://binance.vision"
+    url_vision = "/".join(["https://binance.vision", "api", "v3", "klines"])
     params_vision = {"symbol": symbol, "interval": bar, "limit": limit}
     
     try:
-        res_bv = requests.get(url_vision, params=params_vision, headers=HEADERS, timeout=10)
-        if res_bv.status_code == 200:
-            data_bv = res_bv.json()
+        r_bv = requests.get(url_vision, params=params_vision, headers=HEADERS, timeout=10)
+        if r_bv.status_code == 200 and r_bv.text.strip():
+            data_bv = r_bv.json()
             if isinstance(data_bv, list) and len(data_bv) > 0:
                 df = pd.DataFrame([row[:6] for row in data_bv], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 for col in ['open', 'high', 'low', 'close']:
