@@ -18,6 +18,12 @@ SYMBOLS = [
 
 bot = telebot.TeleBot(TG_TOKEN)
 
+# Заголовки браузера, чтобы биржи не считали запрос обычным скриптом
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json"
+}
+
 # --- 2. ВСТРОЕННЫЕ ФОРМУЛЫ ИНДИКАТОРОВ ---
 def calc_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
@@ -39,37 +45,44 @@ def calc_stoch(df, k=14, d=3, smooth_k=3):
     stoch_d = stoch_k.rolling(window=d).mean()
     return stoch_k, stoch_d
 
-# --- 3. ПОЛУЧЕНИЕ ДАННЫХ ДЛЯ СЕРВЕРОВ США (BINANCE VISION + MEXC) ---
+# --- 3. ПОЛУЧЕНИЕ ДАННЫХ ДЛЯ СЕРВЕРОВ США (KRAKEN + KUCOIN + CRYPTOCOMPARE) ---
 def get_market_klines(symbol, interval, limit=200):
-    bar = "1h" if interval == "60" else "15m"
+    coin = symbol.replace("USDT", "")
     
-    # Канал 1: Официальное зеркало данных Binance (открыто для серверов GitHub в США)
-    url_vision = "https://binance.vision"
-    params_vision = {"symbol": symbol, "interval": bar, "limit": limit}
+    # Канал 1: Биржа Kraken (официально работает в США, не блокирует GitHub)
+    kraken_coin = "XBT" if coin == "BTC" else coin
+    kraken_pair = f"{kraken_coin}USD"
+    kraken_interval = 60 if interval == "60" else 15
+    url_kraken = "https://kraken.com"
+    params_kraken = {"pair": kraken_pair, "interval": kraken_interval}
+    
     try:
-        res = requests.get(url_vision, params=params_vision, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            if isinstance(data, list) and len(data) > 0:
-                df = pd.DataFrame([row[:6] for row in data], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                for col in ['open', 'high', 'low', 'close']:
-                    df[col] = df[col].astype(float)
-                return df
+        res = requests.get(url_kraken, params=params_kraken, headers=HEADERS, timeout=10).json()
+        if not res.get('error') and res.get('result'):
+            pair_key = [k for k in res['result'].keys() if k != 'last'][0]
+            data = res['result'][pair_key][-limit:]
+            df = pd.DataFrame([row[:6] for row in data], columns=['timestamp', 'open', 'high', 'low', 'close', 'vwap'])
+            for col in ['open', 'high', 'low', 'close']:
+                df[col] = df[col].astype(float)
+            return df
     except Exception:
         pass
 
-    # Канал 2: Резерв через MEXC (для редких монет вроде PUMPUSDT)
-    url_mexc = "https://mexc.com"
-    params_mexc = {"symbol": symbol, "interval": bar, "limit": limit}
+    # Канал 2: Резерв через KuCoin (для альткоинов, которых нет на Kraken)
+    kucoin_pair = f"{coin}-USDT"
+    kucoin_type = "1hour" if interval == "60" else "15min"
+    url_kucoin = "https://kucoin.com"
+    params_kucoin = {"symbol": kucoin_pair, "type": kucoin_type}
+    
     try:
-        res_mexc = requests.get(url_mexc, params=params_mexc, timeout=10)
-        if res_mexc.status_code == 200:
-            data_mexc = res_mexc.json()
-            if isinstance(data_mexc, list) and len(data_mexc) > 0:
-                df = pd.DataFrame([row[:6] for row in data_mexc], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                for col in ['open', 'high', 'low', 'close']:
-                    df[col] = df[col].astype(float)
-                return df
+        res_kc = requests.get(url_kucoin, params=params_kucoin, headers=HEADERS, timeout=10).json()
+        if res_kc.get('code') == '200000' and res_kc.get('data'):
+            data_kc = res_kc['data'][:limit]
+            df = pd.DataFrame([row[:6] for row in data_kc], columns=['timestamp', 'open', 'close', 'high', 'low', 'volume'])
+            df = df.iloc[::-1].reset_index(drop=True)
+            for col in ['open', 'high', 'low', 'close']:
+                df[col] = df[col].astype(float)
+            return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
     except Exception:
         pass
         
