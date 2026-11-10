@@ -39,35 +39,37 @@ def calc_stoch(df, k=14, d=3, smooth_k=3):
     stoch_d = stoch_k.rolling(window=d).mean()
     return stoch_k, stoch_d
 
-# --- 3. ПОЛУЧЕНИЕ ДАННЫХ С БИРЖИ (BYBIT + РЕЗЕРВ GATE.IO) ---
+# --- 3. ПОЛУЧЕНИЕ ДАННЫХ ДЛЯ СЕРВЕРОВ США (BINANCE VISION + MEXC) ---
 def get_market_klines(symbol, interval, limit=200):
-    # Канал 1: Bybit
-    url_bybit = "https://bybit.com"
-    params_bybit = {"category": "linear", "symbol": symbol, "interval": interval, "limit": limit}
+    bar = "1h" if interval == "60" else "15m"
+    
+    # Канал 1: Официальное зеркало данных Binance (открыто для серверов GitHub в США)
+    url_vision = "https://binance.vision"
+    params_vision = {"symbol": symbol, "interval": bar, "limit": limit}
     try:
-        res = requests.get(url_bybit, params=params_bybit, timeout=10).json()
-        if res.get('retCode') == 0 and res['result']['list']:
-            list_data = res['result']['list']
-            df = pd.DataFrame(list_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'turnover'])
-            df = df.iloc[::-1].reset_index(drop=True)
-            for col in ['open', 'high', 'low', 'close']:
-                df[col] = df[col].astype(float)
-            return df
+        res = requests.get(url_vision, params=params_vision, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list) and len(data) > 0:
+                df = pd.DataFrame([row[:6] for row in data], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                for col in ['open', 'high', 'low', 'close']:
+                    df[col] = df[col].astype(float)
+                return df
     except Exception:
         pass
 
-    # Канал 2: Резерв Gate.io
-    bar = "1h" if interval == "60" else "15m"
-    pair_gate = symbol.replace("USDT", "_USDT")
-    url_gate = "https://gateio.ws"
-    params_gate = {"currency_pair": pair_gate, "interval": bar, "limit": limit}
+    # Канал 2: Резерв через MEXC (для редких монет вроде PUMPUSDT)
+    url_mexc = "https://mexc.com"
+    params_mexc = {"symbol": symbol, "interval": bar, "limit": limit}
     try:
-        res_gate = requests.get(url_gate, params=params_gate, timeout=10).json()
-        if isinstance(res_gate, list) and len(res_gate) > 0:
-            df = pd.DataFrame(res_gate, columns=['timestamp', 'volume', 'close', 'high', 'low', 'open', 'extra'])
-            for col in ['open', 'high', 'low', 'close']:
-                df[col] = df[col].astype(float)
-            return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+        res_mexc = requests.get(url_mexc, params=params_mexc, timeout=10)
+        if res_mexc.status_code == 200:
+            data_mexc = res_mexc.json()
+            if isinstance(data_mexc, list) and len(data_mexc) > 0:
+                df = pd.DataFrame([row[:6] for row in data_mexc], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                for col in ['open', 'high', 'low', 'close']:
+                    df[col] = df[col].astype(float)
+                return df
     except Exception:
         pass
         
