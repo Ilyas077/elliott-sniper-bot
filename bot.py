@@ -24,6 +24,8 @@ HEADERS = {
     "Accept": "application/json"
 }
 
+last_error_msg = ""
+
 # --- 2. ВСТРОЕННЫЕ ФОРМУЛЫ ИНДИКАТОРОВ ---
 def calc_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
@@ -45,49 +47,51 @@ def calc_stoch(df, k=14, d=3, smooth_k=3):
     stoch_d = stoch_k.rolling(window=d).mean()
     return stoch_k, stoch_d
 
-# --- 3. ПОЛУЧЕНИЕ ДАННЫХ С БИРЖИ (ЗАЩИЩЕННАЯ СБОРКА АДРЕСОВ) ---
+# --- 3. ПОЛУЧЕНИЕ ДАННЫХ С БИРЖИ (COINBASE + BINANCE VISION) ---
 def get_market_klines(symbol, interval, limit=200):
+    global last_error_msg
     coin = symbol.replace("USDT", "")
     
-    # Канал 1: Биржа Kraken (сборка пути по частям)
-    kraken_coin = "XBT" if coin == "BTC" else coin
-    kraken_pair = f"{kraken_coin}USD"
-    kraken_interval = 60 if interval == "60" else 15
-    url_kraken = "/".join(["https://kraken.com", "0", "public", "OHLC"])
-    params_kraken = {"pair": kraken_pair, "interval": kraken_interval}
+    # Канал 1: Биржа Coinbase (Американская биржа, открыта для GitHub в США)
+    cb_pair = f"{coin}-USD"
+    cb_granularity = 3600 if interval == "60" else 900
+    url_cb = "/".join(["https://coinbase.com", "products", cb_pair, "candles"])
+    params_cb = {"granularity": cb_granularity}
     
     try:
-        r = requests.get(url_kraken, params=params_kraken, headers=HEADERS, timeout=10)
-        if r.status_code == 200 and r.text.strip():
-            res = r.json()
-            if not res.get('error') and res.get('result'):
-                keys = [k for k in res['result'].keys() if k != 'last']
-                if keys:
-                    first_key = next(iter(keys))
-                    data = res['result'][first_key][-limit:]
-                    df = pd.DataFrame([row[:6] for row in data], columns=['timestamp', 'open', 'high', 'low', 'close', 'vwap'])
-                    for col in ['open', 'high', 'low', 'close']:
-                        df[col] = df[col].astype(float)
-                    return df
+        r = requests.get(url_cb, params=params_cb, headers=HEADERS, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and len(data) > 0:
+                # Coinbase возвращает: time, low, high, open, close, volume (от новых к старым)
+                df = pd.DataFrame(data[:limit], columns=['timestamp', 'low', 'high', 'open', 'close', 'volume'])
+                df = df.iloc[::-1].reset_index(drop=True)
+                for col in ['open', 'high', 'low', 'close']:
+                    df[col] = df[col].astype(float)
+                return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+        else:
+            last_error_msg = f"Coinbase код {r.status_code}"
     except Exception as e:
-        print(f"Kraken ({symbol}): {e}")
+        last_error_msg = f"Coinbase сбой: {str(e)[:40]}"
 
-    # Канал 2: Зеркало Binance Vision (сборка пути по частям)
+    # Канал 2: Зеркало Binance Vision (для монет, которых нет на Coinbase)
     bar = "1h" if interval == "60" else "15m"
-    url_vision = "/".join(["https://binance.vision", "api", "v3", "klines"])
-    params_vision = {"symbol": symbol, "interval": bar, "limit": limit}
+    url_bv = "/".join(["https://binance.vision", "api", "v3", "klines"])
+    params_bv = {"symbol": symbol, "interval": bar, "limit": limit}
     
     try:
-        r_bv = requests.get(url_vision, params=params_vision, headers=HEADERS, timeout=10)
-        if r_bv.status_code == 200 and r_bv.text.strip():
+        r_bv = requests.get(url_bv, params=params_bv, headers=HEADERS, timeout=10)
+        if r_bv.status_code == 200:
             data_bv = r_bv.json()
             if isinstance(data_bv, list) and len(data_bv) > 0:
                 df = pd.DataFrame([row[:6] for row in data_bv], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 for col in ['open', 'high', 'low', 'close']:
                     df[col] = df[col].astype(float)
                 return df
+        else:
+            last_error_msg += f" | Binance код {r_bv.status_code}"
     except Exception as e:
-        print(f"Binance Vision ({symbol}): {e}")
+        last_error_msg += f" | Binance сбой: {str(e)[:40]}"
         
     return None
 
@@ -95,7 +99,7 @@ def get_market_klines(symbol, interval, limit=200):
 def get_btc_global_status():
     df_btc_1h = get_market_klines("BTCUSDT", "60", limit=200)
     if df_btc_1h is None or df_btc_1h.empty:
-        return "NEUTRAL", "Связь с биржей потеряна", 0
+        return "NEUTRAL", f"Нет связи ({last_error_msg})", 0
         
     df_btc_1h['EMA_200'] = calc_ema(df_btc_1h['close'], length=200)
     last_btc = df_btc_1h.iloc[-1]
