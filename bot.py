@@ -9,7 +9,7 @@ import numpy as np
 from scipy.signal import argrelextrema
 
 # --- 1. НАСТРОЙКИ ---
-TG_TOKEN = 9105916544:AAHGZJFENdw7hi-4xQ1W5pwNjO1-LCFRXvI
+TG_TOKEN = "9105916544:AAHGZJFENdw7hi-4xQ1W5pwNjO1-LCFRXvI"
 TG_CHAT_ID = "531386055"
 
 SYMBOLS = [
