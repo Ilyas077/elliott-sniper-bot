@@ -1,5 +1,6 @@
 import os
 import time
+import base64
 import datetime
 import telebot
 import requests
@@ -20,11 +21,15 @@ SYMBOLS = [
 bot = telebot.TeleBot(TG_TOKEN)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json"
 }
 
 last_error_msg = ""
+
+# Защищенная расшифровка адресов (чтобы редактор не обрезал ссылки)
+CB_BASE = base64.b64decode("aHR0cHM6Ly9hcGkuZXhjaGFuZ2UuY29pbmJhc2UuY29tL3Byb2R1Y3RzLw==").decode()
+BV_URL = base64.b64decode("aHR0cHM6Ly9kYXRhLWFwaS5iaW5hbmNlLnZpc2lvbi9hcGkvdjMva2xpbmVz").decode()
 
 # --- 2. ВСТРОЕННЫЕ ФОРМУЛЫ ИНДИКАТОРОВ ---
 def calc_ema(series, length):
@@ -47,15 +52,15 @@ def calc_stoch(df, k=14, d=3, smooth_k=3):
     stoch_d = stoch_k.rolling(window=d).mean()
     return stoch_k, stoch_d
 
-# --- 3. ПОЛУЧЕНИЕ ДАННЫХ С БИРЖИ (COINBASE + BINANCE VISION) ---
+# --- 3. ПОЛУЧЕНИЕ ДАННЫХ С БИРЖИ ---
 def get_market_klines(symbol, interval, limit=200):
     global last_error_msg
     coin = symbol.replace("USDT", "")
     
-    # Канал 1: Биржа Coinbase (Американская биржа, открыта для GitHub в США)
+    # Канал 1: Биржа Coinbase
     cb_pair = f"{coin}-USD"
     cb_granularity = 3600 if interval == "60" else 900
-    url_cb = "/".join(["https://coinbase.com", "products", cb_pair, "candles"])
+    url_cb = f"{CB_BASE}{cb_pair}/candles"
     params_cb = {"granularity": cb_granularity}
     
     try:
@@ -63,24 +68,22 @@ def get_market_klines(symbol, interval, limit=200):
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list) and len(data) > 0:
-                # Coinbase возвращает: time, low, high, open, close, volume (от новых к старым)
                 df = pd.DataFrame(data[:limit], columns=['timestamp', 'low', 'high', 'open', 'close', 'volume'])
                 df = df.iloc[::-1].reset_index(drop=True)
                 for col in ['open', 'high', 'low', 'close']:
                     df[col] = df[col].astype(float)
                 return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
         else:
-            last_error_msg = f"Coinbase код {r.status_code}"
+            last_error_msg = f"CB {r.status_code}"
     except Exception as e:
-        last_error_msg = f"Coinbase сбой: {str(e)[:40]}"
+        last_error_msg = f"CB сбой: {str(e)[:30]}"
 
-    # Канал 2: Зеркало Binance Vision (для монет, которых нет на Coinbase)
+    # Канал 2: Зеркало Binance Vision
     bar = "1h" if interval == "60" else "15m"
-    url_bv = "/".join(["https://binance.vision", "api", "v3", "klines"])
     params_bv = {"symbol": symbol, "interval": bar, "limit": limit}
     
     try:
-        r_bv = requests.get(url_bv, params=params_bv, headers=HEADERS, timeout=10)
+        r_bv = requests.get(BV_URL, params=params_bv, headers=HEADERS, timeout=10)
         if r_bv.status_code == 200:
             data_bv = r_bv.json()
             if isinstance(data_bv, list) and len(data_bv) > 0:
@@ -89,9 +92,9 @@ def get_market_klines(symbol, interval, limit=200):
                     df[col] = df[col].astype(float)
                 return df
         else:
-            last_error_msg += f" | Binance код {r_bv.status_code}"
+            last_error_msg += f" | BV {r_bv.status_code}"
     except Exception as e:
-        last_error_msg += f" | Binance сбой: {str(e)[:40]}"
+        last_error_msg += f" | BV сбой: {str(e)[:30]}"
         
     return None
 
