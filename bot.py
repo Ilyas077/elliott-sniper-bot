@@ -5,11 +5,9 @@ import requests
 import pandas as pd
 import numpy as np
 
-# Секреты читаются автоматически из настроек GitHub (Secrets)
 TG_TOKEN = os.environ.get("TG_TOKEN")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID")
 
-# --- СПИСОК ИЗ 10 МОНЕТ (МОЖЕТЕ МЕНЯТЬ ПО СВОЕМУ ВКУСУ) ---
 MONETS = {
     'BTC': 'BTCUSDT',
     'ETH': 'ETHUSDT',
@@ -194,9 +192,6 @@ def intraday_wave_analysis(name, ticker_symbol, active_trades, last_signals):
 
         summary_line = f"• <b>{name}</b> (${cp}): 4H {trend_4h} | 15M RSI {rsi_v}"
 
-        # -----------------------------------------------------------------
-        # 1. БЫСТРЫЙ УМНЫЙ ВЫХОД ИЗ АКТИВНОЙ СДЕЛКИ
-        # -----------------------------------------------------------------
         pos = active_trades.get(name)
         if pos:
             side, entry_p, be_done, sl_p = pos['side'], pos['entry'], pos['be'], pos['sl']
@@ -205,20 +200,13 @@ def intraday_wave_analysis(name, ticker_symbol, active_trades, last_signals):
                 if profit_pct >= 1.5 and not be_done:
                     pos['be'] = True
                     pos['sl'] = entry_p
-                    send_telegram(
-                        f"🛡️ <b>БЕЗУБЫТОК ПО #{name} (+{round(profit_pct, 1)}%)</b>\n"
-                        f"Передвиньте Stop-Loss на цену входа: <code>{entry_p}</code>"
-                    )
+                    send_telegram(f"🛡️ <b>БЕЗУБЫТОК ПО #{name} (+{round(profit_pct, 1)}%)</b>\nПередвиньте Stop-Loss на цену входа: <code>{entry_p}</code>")
                 if cp <= sl_p:
                     send_telegram(f"🛑 <b>STOP-LOSS ПО #{name} (LONG)</b>\nЦена: <code>{cp}</code> | Итог: {round(profit_pct, 2)}%")
                     del active_trades[name]
                     return summary_line
                 if (cp < curr['ema100']) or (sk_1h > 80 and sk_1h < sd_1h and psk_1h >= psd_1h):
-                    send_telegram(
-                        f"💰 <b>ФИКСАЦИЯ / ВЫХОД ПО #{name} (LONG)</b>\n"
-                        f"Цена: <code>{cp}</code> | Результат: <b>{round(profit_pct, 2)}%</b>\n"
-                        f"Причина: разворот индикаторов (15M EMA100 / 1H Stoch)"
-                    )
+                    send_telegram(f"💰 <b>ФИКСАЦИЯ / ВЫХОД ПО #{name} (LONG)</b>\nЦена: <code>{cp}</code> | Результат: <b>{round(profit_pct, 2)}%</b>")
                     del active_trades[name]
                     return summary_line
 
@@ -227,4 +215,10 @@ def intraday_wave_analysis(name, ticker_symbol, active_trades, last_signals):
                 if profit_pct >= 1.5 and not be_done:
                     pos['be'] = True
                     pos['sl'] = entry_p
-                    send_telegram(
+                    send_telegram(f"🛡️ <b>БЕЗУБЫТОК ПО #{name} (+{round(profit_pct, 1)}%)</b>\nПередвиньте Stop-Loss на цену входа: <code>{entry_p}</code>")
+                if cp >= sl_p:
+                    send_telegram(f"🛑 <b>STOP-LOSS ПО #{name} (SHORT)</b>\nЦена: <code>{cp}</code> | Итог: {round(profit_pct, 2)}%")
+                    del active_trades[name]
+                    return summary_line
+                if (cp > curr['ema100']) or (sk_1h < 20 and sk_1h > sd_1h and psk_1h <= psd_1h):
+                    send_telegram(f"💰 <b>ФИКСАЦИЯ / ВЫХОД ПО #{name} (SHORT)</b>\nЦена: <code>{cp}</code> | Результат: <b>{round(profit_pct, 2)}%</b>")
