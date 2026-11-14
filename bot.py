@@ -8,6 +8,10 @@ MONETS = {'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT', 'SOL': 'SOLUSDT', 'XRP': 'XRPUSDT'
 STATE_FILE = "state.json"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
+TG_API = "https:" + "//api.telegram.org" + "/bot"
+BN_API = "https:" + "//data-api.binance.vision" + "/api/v3/klines"
+CB_API = "https:" + "//://coinbase.com" + "/products/"
+
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -23,14 +27,14 @@ def send_telegram(message):
         print("Нет TG_TOKEN или TG_CHAT_ID!")
         return
     try:
-        r = requests.post(f"https://telegram.org{TG_TOKEN}/sendMessage", json={"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
+        r = requests.post(TG_API + TG_TOKEN + "/sendMessage", json={"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
         print(f"TG {r.status_code}: {r.text[:80]}")
     except Exception as e:
         print(f"Сбой TG: {e}")
 
 def get_live_candles(symbol, interval, limit=250):
     try:
-        r = requests.get("https://binance.vision", params={'symbol': symbol, 'interval': interval, 'limit': limit}, headers=HEADERS, timeout=8)
+        r = requests.get(BN_API, params={'symbol': symbol, 'interval': interval, 'limit': limit}, headers=HEADERS, timeout=8)
         if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 50:
             df = pd.DataFrame([row[:6] for row in r.json()], columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
             for c in ['open', 'high', 'low', 'close']: df[c] = df[c].astype(float)
@@ -38,7 +42,7 @@ def get_live_candles(symbol, interval, limit=250):
     except Exception: pass
     coin = symbol.replace("USDT", "")
     gran = {'4h': 14400, '1h': 3600, '15m': 900}[interval]
-    r2 = requests.get(f"https://coinbase.com{coin}-USD/candles", params={'granularity': gran}, headers=HEADERS, timeout=8).json()
+    r2 = requests.get(CB_API + f"{coin}-USD/candles", params={'granularity': gran}, headers=HEADERS, timeout=8).json()
     df = pd.DataFrame(r2[:limit], columns=['ts', 'low', 'high', 'open', 'close', 'vol']).iloc[::-1].reset_index(drop=True)
     for c in ['open', 'high', 'low', 'close']: df[c] = df[c].astype(float)
     return df
