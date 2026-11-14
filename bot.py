@@ -23,14 +23,11 @@ def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as f: json.dump(state, f, ensure_ascii=False, indent=2)
 
 def send_telegram(message):
-    if not TG_TOKEN or not TG_CHAT_ID:
-        print("Нет TG_TOKEN или TG_CHAT_ID!")
-        return
+    if not TG_TOKEN or not TG_CHAT_ID: return
     try:
         r = requests.post(TG_API + TG_TOKEN + "/sendMessage", json={"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
         print(f"TG {r.status_code}: {r.text[:80]}")
-    except Exception as e:
-        print(f"Сбой TG: {e}")
+    except Exception as e: print(f"Сбой TG: {e}")
 
 def get_live_candles(symbol, interval, limit=250):
     try:
@@ -47,8 +44,18 @@ def get_live_candles(symbol, interval, limit=250):
     for c in ['open', 'high', 'low', 'close']: df[c] = df[c].astype(float)
     return df
 
+def calc_zlsma(series, length=32):
+    x = np.arange(length)
+    def linreg(s):
+        return s.rolling(length).apply(lambda y: np.polyval(np.polyfit(x, y, 1), length - 1), raw=True)
+    lsma = linreg(series)
+    lsma2 = linreg(lsma)
+    return lsma + (lsma - lsma2)
+
 def calc(df):
     for s in (50, 100, 200): df[f'ema{s}'] = df['close'].ewm(span=s, adjust=False).mean()
+    ohlc4 = (df['open'] + df['high'] + df['low'] + df['close']) / 4.0
+    df['zlsma'] = calc_zlsma(ohlc4, 32)
     d = df['close'].diff()
     df['rsi'] = 100 - (100 / (1 + (d.where(d > 0, 0).rolling(14).mean() / (-d.where(d < 0, 0)).rolling(14).mean())))
     l14, h14 = df['low'].rolling(14).min(), df['high'].rolling(14).max()
@@ -84,18 +91,21 @@ def analyze(name, sym, trades, last_sig):
     try:
         df4, df1, df15 = calc(get_live_candles(sym, '4h')), calc(get_live_candles(sym, '1h')), calc(get_live_candles(sym, '15m'))
         piv4, piv15 = get_pivots(df4, 4), get_pivots(df15, 6)
-        c4, c1, p1, cur, prv = df4.iloc[-1], df1.iloc[-1], df1.iloc[-2], df15.iloc[-1], df15.iloc[-2]
+        c4, c1, cur, prv = df4.iloc[-1], df1.iloc[-1], df15.iloc[-1], df15.iloc[-2]
         w4 = "LONG"
         if len(piv4) >= 4:
             if piv4[-1]['type'] == 'LOW' and piv4[-1]['price'] < piv4[-3]['price']: w4 = "SHORT"
             elif piv4[-1]['type'] == 'HIGH' and piv4[-1]['price'] < piv4[-2]['price']: w4 = "WAIT"
         t4 = "LONG" if (w4 == "LONG" and c4['close'] > c4['ema200']) else ("SHORT" if (w4 == "SHORT" and c4['close'] < c4['ema200']) else "WAIT")
         cp, rsi1, rsi15 = round(float(cur['close']), 4), round(c1['rsi'], 1), round(cur['rsi'], 1)
+        zl, pzl = round(float(cur['zlsma']), 4), float(prv['zlsma'])
+        zl_up, zl_dn = (cp >= zl and zl > pzl), (cp <= zl and zl < pzl)
         sk, sd, psk, psd = cur['sk'], cur['sd'], prv['sk'], prv['sd']
         up = (sk < 25) and (sk > sd) and (psk <= psd or psk < 25)
         dn = (sk > 75) and (sk < sd) and (psk >= psd or psk > 75)
-        print(f"=== {name} | ${cp} | 4H: {t4} | 15M RSI: {rsi15} ===")
-        line = f"• <b>{name}</b> (${cp}): 4H {t4} | RSI {rsi15}"
+        zl_tag = "🟢Над ZLSMA" if cp >= zl else "🔴Под ZLSMA"
+        print(f"=== {name} | ${cp} | 4H: {t4} | {zl_tag} ({zl}) ===")
+        line = f"• <b>{name}</b> (${cp}): 4H {t4} | {zl_tag}"
 
         pos = trades.get(name)
         if pos:
@@ -108,25 +118,25 @@ def analyze(name, sym, trades, last_sig):
                 send_telegram(f"🛑 <b>STOP-LOSS #{name} ({pos['side']})</b>\nЦена: <code>{cp}</code> | {pnl}%")
                 del trades[name]
                 return line
-            if (is_l and (cp < cur['ema100'] or (c1['sk'] > 80 and c1['sk'] < c1['sd']))) or (not is_l and (cp > cur['ema100'] or (c1['sk'] < 20 and c1['sk'] > c1['sd']))):
-                send_telegram(f"💰 <b>ВЫХОД #{name} ({pos['side']})</b>\nЦена: <code>{cp}</code> | <b>{pnl}%</b>")
+            if (is_l and prv['close'] < pzl and cp < zl) or (not is_l and prv['close'] > pzl and cp > zl):
+                send_telegram(f"💰 <b>ВЫХОД ПО ZLSMA 32 #{name} ({pos['side']})</b>\nЦена: <code>{cp}</code> (линия {zl}) | Итог: <b>{pnl}%</b>")
                 del trades[name]
             return line
 
         ts = str(cur['ts'])
         if last_sig.get(name) == ts: return line
-        if t4 == "LONG" and c1['close'] > c1['ema200'] and rsi1 < 68 and up and cp > cur['ema50']:
+        if t4 == "LONG" and c1['close'] > c1['ema200'] and rsi1 < 68 and up and zl_up:
             ok, msg = check_elliott(piv15, 'BULL')
-            sl = round(float(min(cur['ema200'], df15['low'].iloc[-5:].min())) * 0.998, 4)
+            sl = round(float(min(zl, df15['low'].iloc[-5:].min())) * 0.998, 4)
             tp = round(cp + (cp - sl) * 2.5, 4)
             trades[name], last_sig[name] = {"side": "LONG", "entry": cp, "sl": sl, "be": False}, ts
-            send_telegram(f"🚀 <b>LONG #{name}</b>\nВход: <code>{cp}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\nRSI: {rsi1}/{rsi15} | Волны: {msg} ({'✅' if ok else '⚠️'})")
-        elif t4 == "SHORT" and c1['close'] < c1['ema200'] and rsi1 > 32 and dn and cp < cur['ema50']:
+            send_telegram(f"🚀 <b>LONG #{name} (ZLSMA 32 + Снайпер)</b>\nВход: <code>{cp}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\nZLSMA: <code>{zl}</code> | RSI: {rsi1}/{rsi15} | Волны: {msg} ({'✅' if ok else '⚠️'})")
+        elif t4 == "SHORT" and c1['close'] < c1['ema200'] and rsi1 > 32 and dn and zl_dn:
             ok, msg = check_elliott(piv15, 'BEAR')
-            sl = round(float(max(cur['ema200'], df15['high'].iloc[-5:].max())) * 1.002, 4)
+            sl = round(float(max(zl, df15['high'].iloc[-5:].max())) * 1.002, 4)
             tp = round(cp - (sl - cp) * 2.5, 4)
             trades[name], last_sig[name] = {"side": "SHORT", "entry": cp, "sl": sl, "be": False}, ts
-            send_telegram(f"🔻 <b>SHORT #{name}</b>\nВход: <code>{cp}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\nRSI: {rsi1}/{rsi15} | Волны: {msg} ({'✅' if ok else '⚠️'})")
+            send_telegram(f"🔻 <b>SHORT #{name} (ZLSMA 32 + Снайпер)</b>\nВход: <code>{cp}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\nZLSMA: <code>{zl}</code> | RSI: {rsi1}/{rsi15} | Волны: {msg} ({'✅' if ok else '⚠️'})")
         return line
     except Exception as e:
         print(f"Ошибка {name}: {e}")
@@ -137,4 +147,4 @@ if __name__ == "__main__":
     res_list = [r for n, s in MONETS.items() if (r := analyze(n, s, st["active_trades"], st["last_signals"])) and not time.sleep(1.5)]
     save_state(st)
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        send_telegram("📡 <b>Тестовый запуск Снайпера (GitHub) прошел!</b>\n\n" + "\n".join(res_list))
+        send_telegram("📡 <b>Снайпер с ZLSMA 32 (ohlc4) обновлен!</b>\n\n" + "\n".join(res_list))
