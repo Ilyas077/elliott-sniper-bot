@@ -38,11 +38,15 @@ def get_live_candles(symbol, interval, limit=150):
             return df
     except Exception: pass
     coin = symbol.replace("USDT", "")
-    gran = {'1h': 3600, '15m': 900}[interval]
+    gran = 3600 if interval == '1h' else 900
+    req_lim = limit if interval == '1h' else limit * 2
     r2 = requests.get(CB_API + f"{coin}-USD/candles", params={'granularity': gran}, headers=HEADERS, timeout=8).json()
-    df = pd.DataFrame(r2[:limit], columns=['ts', 'low', 'high', 'open', 'close', 'vol']).iloc[::-1].reset_index(drop=True)
+    df = pd.DataFrame(r2[:req_lim], columns=['ts', 'low', 'high', 'open', 'close', 'vol']).iloc[::-1].reset_index(drop=True)
     for c in ['open', 'high', 'low', 'close']: df[c] = df[c].astype(float)
-    return df
+    if interval == '1h': return df
+    df['dt'] = pd.to_datetime(df['ts'].astype(int), unit='s')
+    df30 = df.set_index('dt').resample('30min').agg({'ts': 'first', 'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'vol': 'sum'}).dropna().reset_index(drop=True)
+    return df30.tail(limit).reset_index(drop=True)
 
 def calc_zlsma_tv(series, length=32):
     w = np.arange(1, length + 1)
@@ -90,19 +94,19 @@ def check_elliott(w, st='BULL'):
 
 def analyze(name, sym, trades, last_sig):
     try:
-        df1, df15 = calc(get_live_candles(sym, '1h')), calc(get_live_candles(sym, '15m'))
-        piv15 = get_pivots(df15, 6)
+        df1, df30 = calc(get_live_candles(sym, '1h')), calc(get_live_candles(sym, '30m'))
+        piv30 = get_pivots(df30, 5)
         c1, p1 = df1.iloc[-2], df1.iloc[-3]
-        live_p = round(float(df15.iloc[-1]['close']), 4)
-        cur, prv = df15.iloc[-2], df15.iloc[-3]
+        live_p = round(float(df30.iloc[-1]['close']), 4)
+        cur, prv = df30.iloc[-2], df30.iloc[-3]
 
-        # Ориентир 1H исключительно по ZLSMA 32
+        # Ориентир 1H по ZLSMA 32
         h1_bull = (c1['close'] >= c1['zlsma']) and (c1['zlsma'] > p1['zlsma'])
         h1_bear = (c1['close'] <= c1['zlsma']) and (c1['zlsma'] < p1['zlsma'])
         trend_1h = "LONG" if h1_bull else ("SHORT" if h1_bear else "WAIT")
 
-        # Вход 15M исключительно по ZLSMA 32 + разворот Стохастика
-        cp, rsi1, rsi15 = round(float(cur['close']), 4), round(c1['rsi'], 1), round(cur['rsi'], 1)
+        # Вход и выход 30M по ZLSMA 32 + разворот Стохастика
+        cp, rsi1, rsi30 = round(float(cur['close']), 4), round(c1['rsi'], 1), round(cur['rsi'], 1)
         zl, pzl = round(float(cur['zlsma']), 4), float(prv['zlsma'])
         in_long_zl = (cp >= zl) and (cur['high'] >= zl) and (zl > pzl)
         in_short_zl = (cp <= zl) and (cur['low'] <= zl) and (zl < pzl)
@@ -111,7 +115,7 @@ def analyze(name, sym, trades, last_sig):
         up = (sk < 40) and (sk > sd) and (psk <= psd or psk < 40)
         dn = (sk > 60) and (sk < sd) and (psk >= psd or psk > 60)
 
-        zl_tag = f"🟢Над ZLSMA ({zl})" if cp >= zl else f"🔴Под ZLSMA ({zl})"
+        zl_tag = f"🟢Над 30M ZLSMA ({zl})" if cp >= zl else f"🔴Под 30M ZLSMA ({zl})"
         print(f"=== {name} | ${live_p} | 1H: {trend_1h} | {zl_tag} ===")
         line = f"• <b>{name}</b> (${live_p}): 1H {trend_1h} | {zl_tag}"
 
@@ -126,26 +130,26 @@ def analyze(name, sym, trades, last_sig):
                 send_telegram(f"🛑 <b>STOP-LOSS #{name} ({pos['side']})</b>\nЦена: <code>{live_p}</code> | {pnl}%")
                 del trades[name]
                 return line
-            # Выход при пересечении линии ZLSMA 32 в обратную сторону
+            # Выход при закрытии 30M свечи с обратной стороны ZLSMA 32
             if (is_l and cp < zl) or (not is_l and cp > zl):
-                send_telegram(f"💰 <b>ВЫХОД ПО 15M ZLSMA #{name} ({pos['side']})</b>\nЦена: <code>{live_p}</code> (линия {zl}) | Итог: <b>{pnl}%</b>")
+                send_telegram(f"💰 <b>ВЫХОД ПО 30M ZLSMA #{name} ({pos['side']})</b>\nЦена: <code>{live_p}</code> (линия {zl}) | Итог: <b>{pnl}%</b>")
                 del trades[name]
             return line
 
         ts = str(cur['ts'])
         if last_sig.get(name) == ts: return line
         if trend_1h == "LONG" and rsi1 < 72 and in_long_zl and up:
-            ok, msg = check_elliott(piv15, 'BULL')
-            sl = round(float(min(zl, df15['low'].iloc[-6:-1].min())) * 0.998, 4)
+            ok, msg = check_elliott(piv30, 'BULL')
+            sl = round(float(min(zl, df30['low'].iloc[-6:-1].min())) * 0.998, 4)
             tp = round(live_p + (live_p - sl) * 2.5, 4)
             trades[name], last_sig[name] = {"side": "LONG", "entry": live_p, "sl": sl, "be": False}, ts
-            send_telegram(f"🚀 <b>LONG #{name} (ZLSMA 32)</b>\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n15M ZLSMA: <code>{zl}</code> | RSI: {rsi1}/{rsi15} | Волны: {msg} ({'✅' if ok else '⚠️'})")
+            send_telegram(f"🚀 <b>LONG #{name} (1H + 30M ZLSMA)</b>\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n30M ZLSMA: <code>{zl}</code> | RSI: {rsi1}/{rsi30} | Волны: {msg} ({'✅' if ok else '⚠️'})")
         elif trend_1h == "SHORT" and rsi1 > 28 and in_short_zl and dn:
-            ok, msg = check_elliott(piv15, 'BEAR')
-            sl = round(float(max(zl, df15['high'].iloc[-6:-1].max())) * 1.002, 4)
+            ok, msg = check_elliott(piv30, 'BEAR')
+            sl = round(float(max(zl, df30['high'].iloc[-6:-1].max())) * 1.002, 4)
             tp = round(live_p - (sl - live_p) * 2.5, 4)
             trades[name], last_sig[name] = {"side": "SHORT", "entry": live_p, "sl": sl, "be": False}, ts
-            send_telegram(f"🔻 <b>SHORT #{name} (ZLSMA 32)</b>\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n15M ZLSMA: <code>{zl}</code> | RSI: {rsi1}/{rsi15} | Волны: {msg} ({'✅' if ok else '⚠️'})")
+            send_telegram(f"🔻 <b>SHORT #{name} (1H + 30M ZLSMA)</b>\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n30M ZLSMA: <code>{zl}</code> | RSI: {rsi1}/{rsi30} | Волны: {msg} ({'✅' if ok else '⚠️'})")
         return line
     except Exception as e:
         print(f"Ошибка {name}: {e}")
@@ -156,4 +160,4 @@ if __name__ == "__main__":
     res_list = [r for n, s in MONETS.items() if (r := analyze(n, s, st["active_trades"], st["last_signals"])) and not time.sleep(1.5)]
     save_state(st)
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        send_telegram("📡 <b>Снайпер (чистый ZLSMA 32: 1H + 15M) запущен!</b>\n\n" + "\n".join(res_list))
+        send_telegram("📡 <b>Снайпер переведен на 1H + 30M ZLSMA 32!</b>\n\n" + "\n".join(res_list))
