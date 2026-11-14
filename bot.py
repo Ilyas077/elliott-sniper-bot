@@ -44,17 +44,18 @@ def send_telegram(message):
         if r.status_code != 200:
             print(f"Ответ TG ({r.status_code}): {r.text}")
         else:
-            print("Сообщение в Telegram успешно отправлено!")
+            print("✅ Сообщение в Telegram успешно отправлено!")
     except Exception as e:
         print(f"Сбой отправки TG: {e}")
 
 
 def get_live_candles(symbol, interval, limit=250):
     coin = symbol.replace("USDT", "")
+    # Канал 1: Coinbase (работает на GitHub США)
     gran_map = {'4h': 14400, '1h': 3600, '15m': 900}
     try:
         cb_url = f"https://coinbase.com{coin}-USD/candles"
-        r = requests.get(cb_url, params={'granularity': gran_map[interval]}, headers=HEADERS, timeout=8)
+        r = requests.get(cb_url, params={'granularity': gran_map[interval]}, headers=HEADERS, timeout=10)
         if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 50:
             df = pd.DataFrame(r.json()[:limit], columns=['ts', 'low', 'high', 'open', 'close', 'vol'])
             df = df.iloc[::-1].reset_index(drop=True)
@@ -65,18 +66,21 @@ def get_live_candles(symbol, interval, limit=250):
     except Exception:
         pass
 
-    okx_map = {'4h': '4H', '1h': '1H', '15m': '15m'}
+    # Канал 2: Резерв Kraken (биржа США, без блокировок)
+    kr_map = {'4h': 240, '1h': 60, '15m': 15}
+    kr_coin = "XBT" if coin == "BTC" else coin
     r2 = requests.get(
-        "https://okx.com",
-        params={'instId': f"{coin}-USDT", 'bar': okx_map[interval], 'limit': limit},
+        "https://kraken.com",
+        params={'pair': f"{kr_coin}USD", 'interval': kr_map[interval]},
         headers=HEADERS,
-        timeout=8
+        timeout=10
     ).json()
-    rows = r2['data'][::-1]
-    df = pd.DataFrame([row[:6] for row in rows], columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
+    pair_key = [k for k in r2['result'].keys() if k != 'last'][0]
+    rows = r2['result'][pair_key][-limit:]
+    df = pd.DataFrame([row[:6] for row in rows], columns=['ts', 'open', 'high', 'low', 'close', 'vwap'])
     for c in ['open', 'high', 'low', 'close']:
         df[c] = df[c].astype(float)
-    df['datetime'] = pd.to_datetime(df['ts'].astype(int), unit='ms') + pd.Timedelta(hours=5)
+    df['datetime'] = pd.to_datetime(df['ts'].astype(int), unit='s') + pd.Timedelta(hours=5)
     return df
 
 
@@ -204,5 +208,3 @@ if __name__ == "__main__":
     state = load_state()
     summary_list = [res for n, s in MONETS.items() if (res := intraday_wave_analysis(n, s, state["active_trades"], state["last_signals"])) and not time.sleep(1.5)]
     save_state(state)
-    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        send_telegram("📡 <b>Тестовый запуск Снайпера (GitHub) прошел!</b>\n\n" + "\n".join(summary_list))
