@@ -5,8 +5,8 @@ import requests
 import pandas as pd
 import numpy as np
 
-TG_TOKEN = os.environ.get("TG_TOKEN")
-TG_CHAT_ID = os.environ.get("TG_CHAT_ID")
+TG_TOKEN = "".join((os.environ.get("TG_TOKEN") or "").split())
+TG_CHAT_ID = "".join((os.environ.get("TG_CHAT_ID") or "").split())
 
 MONETS = {
     'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT', 'SOL': 'SOLUSDT',
@@ -16,6 +16,7 @@ MONETS = {
 }
 
 WINDOW_4H, WINDOW_15M, STATE_FILE = 4, 6, "state.json"
+HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 
 def load_state():
@@ -39,34 +40,40 @@ def send_telegram(message):
         return
     url = f"https://telegram.org{TG_TOKEN}/sendMessage"
     try:
-        requests.post(url, json={"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
+        r = requests.post(url, json={"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
+        if r.status_code != 200:
+            print(f"Ответ TG ({r.status_code}): {r.text}")
+        else:
+            print("Сообщение в Telegram успешно отправлено!")
     except Exception as e:
-        print(f"Ошибка TG: {e}")
+        print(f"Сбой отправки TG: {e}")
 
 
-def get_live_candles(symbol, interval, limit=300):
-    bybit_map = {'4h': '240', '1h': '60', '15m': '15'}
+def get_live_candles(symbol, interval, limit=250):
+    coin = symbol.replace("USDT", "")
+    gran_map = {'4h': 14400, '1h': 3600, '15m': 900}
     try:
-        r = requests.get(
-            "https://bybit.com",
-            params={'category': 'linear', 'symbol': symbol, 'interval': bybit_map[interval], 'limit': limit},
-            timeout=5
-        ).json()
-        if r.get('retCode') == 0 and r['result']['list']:
-            df = pd.DataFrame(r['result']['list'][::-1], columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'turn'])
+        cb_url = f"https://coinbase.com{coin}-USD/candles"
+        r = requests.get(cb_url, params={'granularity': gran_map[interval]}, headers=HEADERS, timeout=8)
+        if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 50:
+            df = pd.DataFrame(r.json()[:limit], columns=['ts', 'low', 'high', 'open', 'close', 'vol'])
+            df = df.iloc[::-1].reset_index(drop=True)
             for c in ['open', 'high', 'low', 'close']:
                 df[c] = df[c].astype(float)
-            df['datetime'] = pd.to_datetime(df['ts'].astype(int), unit='ms') + pd.Timedelta(hours=5)
+            df['datetime'] = pd.to_datetime(df['ts'].astype(int), unit='s') + pd.Timedelta(hours=5)
             return df
     except Exception:
         pass
 
+    okx_map = {'4h': '4H', '1h': '1H', '15m': '15m'}
     r2 = requests.get(
-        "https://binance.vision",
-        params={'symbol': symbol, 'interval': interval, 'limit': limit},
-        timeout=5
+        "https://okx.com",
+        params={'instId': f"{coin}-USDT", 'bar': okx_map[interval], 'limit': limit},
+        headers=HEADERS,
+        timeout=8
     ).json()
-    df = pd.DataFrame(r2, columns=['ts', 'open', 'high', 'low', 'close', 'v', 'ct', 'qv', 'n', 'tb', 'tq', 'ig'])
+    rows = r2['data'][::-1]
+    df = pd.DataFrame([row[:6] for row in rows], columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
     for c in ['open', 'high', 'low', 'close']:
         df[c] = df[c].astype(float)
     df['datetime'] = pd.to_datetime(df['ts'].astype(int), unit='ms') + pd.Timedelta(hours=5)
@@ -133,13 +140,13 @@ def intraday_wave_analysis(name, ticker_symbol, active_trades, last_signals):
                 wave_4h = "WAIT"
         trend_4h = "LONG" if (wave_4h == "LONG" and above_4h) else ("SHORT" if (wave_4h == "SHORT" and not above_4h) else "WAIT")
 
-        df_1h = calculate_indicators(get_live_candles(ticker_symbol, '1h', 300))
+        df_1h = calculate_indicators(get_live_candles(ticker_symbol, '1h', 250))
         c1h, p1h = df_1h.iloc[-1], df_1h.iloc[-2]
         rsi_1h = round(c1h['rsi'], 1)
         sk_1h, sd_1h, psk_1h, psd_1h = c1h['stoch_k'], c1h['stoch_d'], p1h['stoch_k'], p1h['stoch_d']
         b_1h, s_1h = c1h['close'] > c1h['ema200'], c1h['close'] < c1h['ema200']
 
-        df_15m = calculate_indicators(get_live_candles(ticker_symbol, '15m', 350))
+        df_15m = calculate_indicators(get_live_candles(ticker_symbol, '15m', 250))
         piv_15m = get_wave_pivots(df_15m, WINDOW_15M)
         curr, prev = df_15m.iloc[-1], df_15m.iloc[-2]
         cp, rsi_v = round(float(curr['close']), 4), round(curr['rsi'], 1)
