@@ -1,156 +1,225 @@
-import os, json, time, requests
+import os, io, sys, json, time, requests
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 TG_TOKEN = "".join((os.environ.get("TG_TOKEN") or "").split())
 TG_CHAT_ID = "".join((os.environ.get("TG_CHAT_ID") or "").split())
-MONETS = {'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT', 'SOL': 'SOLUSDT', 'XRP': 'XRPUSDT', 'AVAX': 'AVAXUSDT', 'INJ': 'INJUSDT', 'AAVE': 'AAVEUSDT', 'ARB': 'ARBUSDT', 'JUP': 'JUPUSDT', 'LDO': 'LDOUSDT'}
+
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
 STATE_FILE = "state.json"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 TG_API = "https:" + "//api.telegram.org" + "/bot"
-BN_API = "https:" + "//data-api.binance.vision" + "/api/v3/klines"
-CB_API = "https:" + "//://coinbase.com" + "/products/"
+MIRRORS = [
+    "https:" + "//://binance.com" + "/fapi/v1/klines",
+    "https:" + "//data-api.binance.vision" + "/api/v3/klines"
+]
 
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f: return json.load(f)
         except Exception: pass
-    return {"active_trades": {}, "last_signals": {}}
+    return {"sent_signals": {}}
 
 def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as f: json.dump(state, f, ensure_ascii=False, indent=2)
 
-def send_telegram(message):
+def send_telegram_photo(caption, img_buf):
     if not TG_TOKEN or not TG_CHAT_ID: return
     try:
-        r = requests.post(TG_API + TG_TOKEN + "/sendMessage", json={"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
-        print(f"TG {r.status_code}: {r.text[:80]}")
-    except Exception as e: print(f"Сбой TG: {e}")
+        r = requests.post(
+            TG_API + TG_TOKEN + "/sendPhoto",
+            data={"chat_id": TG_CHAT_ID, "caption": caption, "parse_mode": "HTML"},
+            files={"photo": ("chart.png", img_buf, "image/png")},
+            timeout=15
+        )
+        print(f"TG Photo {r.status_code}: {r.text[:80]}")
+    except Exception as e: print(f"Ошибка TG Photo: {e}")
 
-def get_live_candles(symbol, interval, limit=150):
+def send_telegram_text(text):
+    if not TG_TOKEN or not TG_CHAT_ID: return
     try:
-        r = requests.get(BN_API, params={'symbol': symbol, 'interval': interval, 'limit': limit}, headers=HEADERS, timeout=8)
-        if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 50:
-            df = pd.DataFrame([row[:6] for row in r.json()], columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-            for c in ['open', 'high', 'low', 'close']: df[c] = df[c].astype(float)
-            return df
-    except Exception: pass
-    coin = symbol.replace("USDT", "")
-    gran = 3600 if interval == '1h' else 900
-    req_lim = limit if interval == '1h' else limit * 2
-    r2 = requests.get(CB_API + f"{coin}-USD/candles", params={'granularity': gran}, headers=HEADERS, timeout=8).json()
-    df = pd.DataFrame(r2[:req_lim], columns=['ts', 'low', 'high', 'open', 'close', 'vol']).iloc[::-1].reset_index(drop=True)
-    for c in ['open', 'high', 'low', 'close']: df[c] = df[c].astype(float)
-    if interval == '1h': return df
-    df['dt'] = pd.to_datetime(df['ts'].astype(int), unit='s')
-    df30 = df.set_index('dt').resample('30min').agg({'ts': 'first', 'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'vol': 'sum'}).dropna().reset_index(drop=True)
-    return df30.tail(limit).reset_index(drop=True)
+        requests.post(TG_API + TG_TOKEN + "/sendMessage", json={"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=10)
+    except Exception as e: print(f"Ошибка TG Text: {e}")
 
-def calc_zlsma_tv(series, length=32):
-    w = np.arange(1, length + 1)
-    def lsma(s):
-        wma = s.rolling(length).apply(lambda x: np.dot(x, w) / w.sum(), raw=True)
-        sma = s.rolling(length).mean()
-        return 3 * wma - 2 * sma
-    l1 = lsma(series)
-    l2 = lsma(l1)
-    return l1 + (l1 - l2)
+def fetch_candles(symbol, interval, limit=250, start_ms=None):
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    if start_ms: params["startTime"] = start_ms
+    for url in MIRRORS:
+        try:
+            r = requests.get(url, params=params, headers=HEADERS, timeout=10)
+            if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 10:
+                df = pd.DataFrame([x[:6] for x in r.json()], columns=["ts", "open", "high", "low", "close", "vol"])
+                for c in ["open", "high", "low", "close", "vol"]: df[c] = df[c].astype(float)
+                df["dt"] = pd.to_datetime(df["ts"].astype(int), unit="ms")
+                return df
+        except Exception: pass
+    return None
 
-def calc(df):
-    ohlc4 = (df['open'] + df['high'] + df['low'] + df['close']) / 4.0
-    df['zlsma'] = calc_zlsma_tv(ohlc4, 32)
-    d = ohlc4.diff()
+def add_indicators(df):
+    for p in (9, 21, 50, 200):
+        df[f"ema{p}"] = df["close"].ewm(span=p, adjust=False).mean()
+    
+    # RSI 14
+    d = df["close"].diff()
     gain = d.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
     loss = (-d.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
-    rsi = 100 - (100 / (1 + (gain / loss.replace(0, 1e-9))))
-    min_r, max_r = rsi.rolling(14).min(), rsi.rolling(14).max()
-    stoch_r = 100 * (rsi - min_r) / (max_r - min_r).replace(0, 1e-9)
-    df['sk'] = stoch_r.rolling(10).mean()
-    df['sd'] = df['sk'].rolling(3).mean()
+    df["rsi"] = 100 - (100 / (1 + gain / loss.replace(0, 1e-9)))
+    
+    # MACD 12/26/9
+    ema12 = df["close"].ewm(span=12, adjust=False).mean()
+    ema26 = df["close"].ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    df["macd_hist"] = macd - macd.ewm(span=9, adjust=False).mean()
+    
+    # ATR 14 & ADX 14
+    h, l, c = df["high"], df["low"], df["close"]
+    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    df["atr"] = tr.ewm(alpha=1/14, adjust=False).mean()
+    
+    up_move, dn_move = h.diff(), -l.diff()
+    pdm = pd.Series(np.where((up_move > dn_move) & (up_move > 0), up_move, 0.0), index=df.index)
+    mdm = pd.Series(np.where((dn_move > up_move) & (dn_move > 0), dn_move, 0.0), index=df.index)
+    pdi = 100 * pdm.ewm(alpha=1/14, adjust=False).mean() / df["atr"].replace(0, 1e-9)
+    mdi = 100 * mdm.ewm(alpha=1/14, adjust=False).mean() / df["atr"].replace(0, 1e-9)
+    dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, 1e-9)
+    df["adx"] = dx.ewm(alpha=1/14, adjust=False).mean()
+    
+    # Volume SMA 20
+    df["vol_sma"] = df["vol"].rolling(20).mean()
     return df
 
-def analyze(name, sym, trades, last_sig):
-    try:
-        df1, df30 = calc(get_live_candles(sym, '1h')), calc(get_live_candles(sym, '30m'))
-        c1, p1 = df1.iloc[-2], df1.iloc[-3]
-        live_p = round(float(df30.iloc[-1]['close']), 4)
+def get_1h_trend(row_1h):
+    if row_1h["adx"] < 18: return "FLAT"
+    if row_1h["ema50"] > row_1h["ema200"] and row_1h["close"] > row_1h["ema200"]: return "LONG"
+    if row_1h["ema50"] < row_1h["ema200"] and row_1h["close"] < row_1h["ema200"]: return "SHORT"
+    return "FLAT"
 
-        h1_bull = (c1['close'] >= c1['zlsma']) and (c1['zlsma'] > p1['zlsma'])
-        h1_bear = (c1['close'] <= c1['zlsma']) and (c1['zlsma'] < p1['zlsma'])
-        trend_1h = "LONG" if h1_bull else ("SHORT" if h1_bear else "WAIT")
+def check_setup(cur, prv, trend_1h):
+    vol_ok = cur["vol"] > cur["vol_sma"]
+    
+    # 1. BREAKOUT
+    if trend_1h == "LONG" and prv["ema9"] <= prv["ema21"] and cur["ema9"] > cur["ema21"] and cur["rsi"] > 50 and cur["macd_hist"] > 0 and vol_ok:
+        return "LONG", "BREAKOUT"
+    if trend_1h == "SHORT" and prv["ema9"] >= prv["ema21"] and cur["ema9"] < cur["ema21"] and cur["rsi"] < 50 and cur["macd_hist"] < 0 and vol_ok:
+        return "SHORT", "BREAKOUT"
+    
+    # 2. PULLBACK
+    if trend_1h == "LONG" and cur["ema9"] > cur["ema21"]:
+        touched = (prv["low"] <= prv["ema21"] * 1.001) and (prv["close"] >= prv["ema21"] * 0.997)
+        if touched and cur["close"] > cur["ema21"] and cur["close"] > cur["open"] and cur["rsi"] > 50 and cur["macd_hist"] > 0 and vol_ok:
+            return "LONG", "PULLBACK"
+    if trend_1h == "SHORT" and cur["ema9"] < cur["ema21"]:
+        touched = (prv["high"] >= prv["ema21"] * 0.999) and (prv["close"] <= prv["ema21"] * 1.003)
+        if touched and cur["close"] < cur["ema21"] and cur["close"] < cur["open"] and cur["rsi"] < 50 and cur["macd_hist"] < 0 and vol_ok:
+            return "SHORT", "PULLBACK"
+            
+    return None, None
 
-        cur = df30.iloc[-2]
-        cp, zl = round(float(cur['close']), 4), round(float(cur['zlsma']), 4)
-        sk, sd = round(float(cur['sk']), 1), round(float(cur['sd']), 1)
-        zl_tag = f"🟢Над ZLSMA ({zl})" if cp >= zl else f"🔴Под ZLSMA ({zl})"
-        print(f"=== {name} | ${live_p} | 1H: {trend_1h} | {zl_tag} | SRSI: {sk}/{sd} ===")
-        line = f"• <b>{name}</b> (${live_p}): 1H {trend_1h} | {zl_tag} | SRSI {sk}"
+def build_chart(df, symbol, side, setup, entry, sl, tp1, tp2):
+    sub = df.tail(55).reset_index(drop=True)
+    fig, ax = plt.subplots(figsize=(10, 5), facecolor="#131722")
+    ax.set_facecolor("#131722")
+    
+    for i, r in sub.iterrows():
+        color = "#089981" if r["close"] >= r["open"] else "#f23645"
+        ax.plot([i, i], [r["low"], r["high"]], color=color, linewidth=1)
+        ax.bar(i, abs(r["close"] - r["open"]), bottom=min(r["open"], r["close"]), width=0.6, color=color)
+        
+    ax.plot(sub.index, sub["ema9"], color="#2962ff", linewidth=1.2, label="EMA 9")
+    ax.plot(sub.index, sub["ema21"], color="#ff9800", linewidth=1.3, label="EMA 21")
+    ax.plot(sub.index, sub["ema50"], color="#ab47bc", linewidth=1.3, label="EMA 50")
+    
+    ax.axhline(entry, color="#ffffff", linestyle="--", linewidth=1, label=f"Entry: {entry}")
+    ax.axhline(sl, color="#f23645", linestyle="-", linewidth=1.2, label=f"SL: {sl}")
+    ax.axhline(tp1, color="#089981", linestyle=":", linewidth=1.2, label=f"TP1 (1R): {tp1}")
+    ax.axhline(tp2, color="#00e676", linestyle="-", linewidth=1.2, label=f"TP2 (2R): {tp2}")
+    
+    ax.set_title(f"{symbol} 15M | {side} ({setup})", color="white", fontsize=12, fontweight="bold")
+    ax.tick_params(colors="#b2b5be")
+    ax.grid(color="#2a2e39", linestyle="--", linewidth=0.5)
+    ax.legend(facecolor="#1e222d", edgecolor="#2a2e39", labelcolor="white", loc="upper left", fontsize=8)
+    
+    buf = io.BytesIO()
+    plt.tight_layout()
+    plt.savefig(buf, format="png", dpi=130)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
 
-        # Сопровождение открытой позиции
-        pos = trades.get(name)
-        if pos:
-            is_l = pos['side'] == "LONG"
-            pnl = round(((live_p - pos['entry']) if is_l else (pos['entry'] - live_p)) / pos['entry'] * 100, 2)
-            if pnl >= 1.5 and not pos['be']:
-                pos['be'], pos['sl'] = True, pos['entry']
-                send_telegram(f"🛡️ <b>БЕЗУБЫТОК #{name} (+{pnl}%)</b>\nSL: <code>{pos['entry']}</code>")
-            if (is_l and live_p <= pos['sl']) or (not is_l and live_p >= pos['sl']):
-                send_telegram(f"🛑 <b>STOP-LOSS #{name} ({pos['side']})</b>\nЦена: <code>{live_p}</code> | {pnl}%")
-                del trades[name]
-                return line
-            if (is_l and cp < zl) or (not is_l and cp > zl):
-                send_telegram(f"💰 <b>ВЫХОД ПО 30M ZLSMA #{name} ({pos['side']})</b>\nЦена: <code>{live_p}</code> (линия {zl}) | Итог: <b>{pnl}%</b>")
-                del trades[name]
-            return line
-
-        # Проверяем 2 последние закрытые 30m свечи (защита от задержек GitHub!)
-        for idx in (-3, -2):
-            c, p = df30.iloc[idx], df30.iloc[idx - 1]
-            ts = str(c['ts'])
-            if last_sig.get(name) == ts: continue
-
-            c_p, p_p = round(float(c['close']), 4), float(p['close'])
-            c_zl, p_zl = round(float(c['zlsma']), 4), float(p['zlsma'])
-            c_sk, c_sd = round(float(c['sk']), 1), round(float(c['sd']), 1)
-            p_sk, p_sd = float(p['sk']), float(p['sd'])
-
-            # 24H ликвидность (48 свечей по 30м)
-            day_hi = df30.iloc[idx-48:idx]['high'].max()
-            day_lo = df30.iloc[idx-48:idx]['low'].min()
-            swept_lo = (c['low'] <= day_lo) and (c_p > day_lo) and (c_sk > c_sd)
-            swept_hi = (c['high'] >= day_hi) and (c_p < day_hi) and (c_sk < c_sd)
-
-            cross_up = (p_p <= p_zl) and (c_p > c_zl) and (c_zl >= p_zl * 0.999)
-            cross_dn = (p_p >= p_zl) and (c_p < c_zl) and (c_zl <= p_zl * 1.001)
-            pb_long = (trend_1h == "LONG") and (c_p > c_zl) and (c_zl > p_zl) and (c_sk > c_sd) and (p_sk <= p_sd) and (c_sk < 65)
-            pb_short = (trend_1h == "SHORT") and (c_p < c_zl) and (c_zl < p_zl) and (c_sk < c_sd) and (p_sk >= p_sd) and (c_sk > 35)
-
-            if (cross_up and c_sk > c_sd and c_sk < 88) or pb_long or swept_lo:
-                reason = "Снято дно 24H + откуп" if swept_lo else ("Пробой 30M ZLSMA вверх" if cross_up else "Откат по тренду 1H + ZLSMA")
-                sl = round(float(min(c_zl, df30['low'].iloc[idx-4:idx+1].min())) * 0.997, 4)
-                tp = round(live_p + (live_p - sl) * 2.5, 4)
-                trades[name], last_sig[name] = {"side": "LONG", "entry": live_p, "sl": sl, "be": False}, ts
-                send_telegram(f"🚀 <b>LONG #{name}</b> ({reason})\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n30M ZLSMA: <code>{c_zl}</code> | StochRSI: {c_sk}/{c_sd} | 1H: {trend_1h}")
-                break
-
-            elif (cross_dn and c_sk < c_sd and c_sk > 12) or pb_short or swept_hi:
-                reason = "Снят пик 24H + отбой" if swept_hi else ("Пробой 30M ZLSMA вниз" if cross_dn else "Откат по тренду 1H + ZLSMA")
-                sl = round(float(max(c_zl, df30['high'].iloc[idx-4:idx+1].max())) * 1.003, 4)
-                tp = round(live_p - (sl - live_p) * 2.5, 4)
-                trades[name], last_sig[name] = {"side": "SHORT", "entry": live_p, "sl": sl, "be": False}, ts
-                send_telegram(f"🔻 <b>SHORT #{name}</b> ({reason})\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n30M ZLSMA: <code>{c_zl}</code> | StochRSI: {c_sk}/{c_sd} | 1H: {trend_1h}")
-                break
-
-        return line
-    except Exception as e:
-        print(f"Ошибка {name}: {e}")
-        return f"• <b>{name}</b>: ошибка"
-
-if __name__ == "__main__":
-    st = load_state()
-    res_list = [r for n, s in MONETS.items() if (r := analyze(n, s, st["active_trades"], st["last_signals"])) and not time.sleep(1.5)]
-    save_state(st)
+def run_live():
+    state = load_state()
+    summary = []
+    
+    for sym in SYMBOLS:
+        df1h = fetch_candles(sym, "1h", 250)
+        df15m = fetch_candles(sym, "15m", 150)
+        if df1h is None or df15m is None: continue
+        
+        df1h = add_indicators(df1h)
+        df15m = add_indicators(df15m)
+        
+        row_1h = df1h.iloc[-2]
+        trend_1h = get_1h_trend(row_1h)
+        cur, prv = df15m.iloc[-2], df15m.iloc[-3]
+        live_p = round(float(df15m.iloc[-1]["close"]), 4)
+        
+        summary.append(f"• <b>{sym}</b> (${live_p}): 1H {trend_1h} | ADX {round(row_1h['adx'], 1)} | 15M RSI {round(cur['rsi'], 1)}")
+        
+        ts_key = f"{sym}_{int(cur['ts'])}"
+        if ts_key in state["sent_signals"]: continue
+        
+        side, setup = check_setup(cur, prv, trend_1h)
+        if side:
+            entry = round(float(cur["close"]), 4)
+            risk = float(cur["atr"]) * 1.5
+            if side == "LONG":
+                sl, tp1, tp2 = round(entry - risk, 4), round(entry + risk, 4), round(entry + risk * 2, 4)
+            else:
+                sl, tp1, tp2 = round(entry + risk, 4), round(entry - risk, 4), round(entry - risk * 2, 4)
+                
+            caption = (
+                f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>SIGNAL BOT V2 — {side} ({setup})</b>\n\n"
+                f"🪙 Пара: <b>#{sym}</b> (15M / 1H)\n"
+                f"💵 Entry: <code>{entry}</code>\n"
+                f"🛑 Stop Loss: <code>{sl}</code>\n"
+                f"🎯 TP1 (50%): <code>{tp1}</code> (1R)\n"
+                f"🎯 TP2 (50%): <code>{tp2}</code> (2R)\n\n"
+                f"📊 RSI 15M: <b>{round(cur['rsi'], 1)}</b> | ADX 1H: <b>{round(row_1h['adx'], 1)}</b>"
+            )
+            chart = build_chart(df15m, sym, side, setup, entry, sl, tp1, tp2)
+            send_telegram_photo(caption, chart)
+            state["sent_signals"][ts_key] = side
+            
+        time.sleep(0.5)
+        
+    # Очистка старых ключей (храним последние 100)
+    if len(state["sent_signals"]) > 100:
+        keys = list(state["sent_signals"].keys())[-100:]
+        state["sent_signals"] = {k: state["sent_signals"][k] for k in keys}
+    save_state(state)
+    
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        send_telegram("📡 <b>Единый Снайпер (30M ZLSMA + StochRSI + 24H дно/пик) готов!</b>\n\n" + "\n".join(res_list))
+        send_telegram_text("📡 <b>SIGNAL BOT V2 — Тестовый запуск пройден!</b>\n\n" + "\n".join(summary))
+
+def run_backtest(days=365):
+    print(f"Запуск бэктеста за {days} дней...")
+    end_ms = int(time.time() * 1000)
+    start_ms = end_ms - days * 86400 * 1000
+    
+    stats = {"BREAKOUT": [], "PULLBACK": []}
+    for sym in SYMBOLS:
+        # Загружаем историю 1H и 15M порциями
+        all_1h, cur_s = [], start_ms - 250 * 3600 * 1000
+        while cur_s < end_ms:
+            chunk = fetch_candles(sym, "1h", 1000, cur_s)
+            if chunk is None or chunk.empty: break
+            all_1h.append(chunk)
+            cur_s = int(chunk["ts"].iloc[-1]) + 3600 * 1000
+            time.sleep(0.2)
+            
+        all_15m, cur_s = [], start_ms - 100 * 900 * 1000
