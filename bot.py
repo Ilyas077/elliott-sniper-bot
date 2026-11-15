@@ -58,7 +58,6 @@ def calc_zlsma_tv(series, length=32):
     l2 = lsma(l1)
     return l1 + (l1 - l2)
 
-# Точный Stoch RSI как на вашем графике TradingView (10, 3, 14, 14, ohlc4)
 def calc(df):
     ohlc4 = (df['open'] + df['high'] + df['low'] + df['close']) / 4.0
     df['zlsma'] = calc_zlsma_tv(ohlc4, 32)
@@ -70,7 +69,6 @@ def calc(df):
     stoch_r = 100 * (rsi - min_r) / (max_r - min_r).replace(0, 1e-9)
     df['sk'] = stoch_r.rolling(10).mean()
     df['sd'] = df['sk'].rolling(3).mean()
-    df['rsi'] = rsi
     return df
 
 def analyze(name, sym, trades, last_sig):
@@ -78,29 +76,19 @@ def analyze(name, sym, trades, last_sig):
         df1, df30 = calc(get_live_candles(sym, '1h')), calc(get_live_candles(sym, '30m'))
         c1, p1 = df1.iloc[-2], df1.iloc[-3]
         live_p = round(float(df30.iloc[-1]['close']), 4)
-        cur, prv = df30.iloc[-2], df30.iloc[-3]
 
         h1_bull = (c1['close'] >= c1['zlsma']) and (c1['zlsma'] > p1['zlsma'])
         h1_bear = (c1['close'] <= c1['zlsma']) and (c1['zlsma'] < p1['zlsma'])
         trend_1h = "LONG" if h1_bull else ("SHORT" if h1_bear else "WAIT")
 
-        cp, pp = round(float(cur['close']), 4), float(prv['close'])
-        zl, pzl = round(float(cur['zlsma']), 4), float(prv['zlsma'])
+        cur = df30.iloc[-2]
+        cp, zl = round(float(cur['close']), 4), round(float(cur['zlsma']), 4)
         sk, sd = round(float(cur['sk']), 1), round(float(cur['sd']), 1)
-        psk, psd = float(prv['sk']), float(prv['sd'])
-
-        # 1. Пробой и закрепление за 30M ZLSMA 32
-        cross_up_zl = (pp <= pzl) and (cp > zl) and (zl >= pzl * 0.999)
-        cross_dn_zl = (pp >= pzl) and (cp < zl) and (zl <= pzl * 1.001)
-
-        # 2. Откат внутри тренда + разворот Stoch RSI
-        pullback_long = (trend_1h == "LONG") and (cp > zl) and (zl > pzl) and (sk > sd) and (psk <= psd) and (sk < 65)
-        pullback_short = (trend_1h == "SHORT") and (cp < zl) and (zl < pzl) and (sk < sd) and (psk >= psd) and (sk > 35)
-
         zl_tag = f"🟢Над ZLSMA ({zl})" if cp >= zl else f"🔴Под ZLSMA ({zl})"
-        print(f"=== {name} | ${live_p} | 1H: {trend_1h} | {zl_tag} | StochRSI: {sk}/{sd} ===")
+        print(f"=== {name} | ${live_p} | 1H: {trend_1h} | {zl_tag} | SRSI: {sk}/{sd} ===")
         line = f"• <b>{name}</b> (${live_p}): 1H {trend_1h} | {zl_tag} | SRSI {sk}"
 
+        # Сопровождение открытой позиции
         pos = trades.get(name)
         if pos:
             is_l = pos['side'] == "LONG"
@@ -112,28 +100,48 @@ def analyze(name, sym, trades, last_sig):
                 send_telegram(f"🛑 <b>STOP-LOSS #{name} ({pos['side']})</b>\nЦена: <code>{live_p}</code> | {pnl}%")
                 del trades[name]
                 return line
-            # Выход при закрытии 30M свечи с обратной стороны ZLSMA 32
             if (is_l and cp < zl) or (not is_l and cp > zl):
                 send_telegram(f"💰 <b>ВЫХОД ПО 30M ZLSMA #{name} ({pos['side']})</b>\nЦена: <code>{live_p}</code> (линия {zl}) | Итог: <b>{pnl}%</b>")
                 del trades[name]
             return line
 
-        ts = str(cur['ts'])
-        if last_sig.get(name) == ts: return line
+        # Проверяем 2 последние закрытые 30m свечи (защита от задержек GitHub!)
+        for idx in (-3, -2):
+            c, p = df30.iloc[idx], df30.iloc[idx - 1]
+            ts = str(c['ts'])
+            if last_sig.get(name) == ts: continue
 
-        if (cross_up_zl and sk > sd and sk < 88) or pullback_long:
-            reason = "Пробой 30M ZLSMA вверх" if cross_up_zl else "Откат по тренду 1H + ZLSMA"
-            sl = round(float(min(zl, df30['low'].iloc[-5:-1].min())) * 0.997, 4)
-            tp = round(live_p + (live_p - sl) * 2.5, 4)
-            trades[name], last_sig[name] = {"side": "LONG", "entry": live_p, "sl": sl, "be": False}, ts
-            send_telegram(f"🚀 <b>LONG #{name}</b> ({reason})\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n30M ZLSMA: <code>{zl}</code> | StochRSI: {sk}/{sd} | 1H: {trend_1h}")
+            c_p, p_p = round(float(c['close']), 4), float(p['close'])
+            c_zl, p_zl = round(float(c['zlsma']), 4), float(p['zlsma'])
+            c_sk, c_sd = round(float(c['sk']), 1), round(float(c['sd']), 1)
+            p_sk, p_sd = float(p['sk']), float(p['sd'])
 
-        elif (cross_dn_zl and sk < sd and sk > 12) or pullback_short:
-            reason = "Пробой 30M ZLSMA вниз" if cross_dn_zl else "Откат по тренду 1H + ZLSMA"
-            sl = round(float(max(zl, df30['high'].iloc[-5:-1].max())) * 1.003, 4)
-            tp = round(live_p - (sl - live_p) * 2.5, 4)
-            trades[name], last_sig[name] = {"side": "SHORT", "entry": live_p, "sl": sl, "be": False}, ts
-            send_telegram(f"🔻 <b>SHORT #{name}</b> ({reason})\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n30M ZLSMA: <code>{zl}</code> | StochRSI: {sk}/{sd} | 1H: {trend_1h}")
+            # 24H ликвидность (48 свечей по 30м)
+            day_hi = df30.iloc[idx-48:idx]['high'].max()
+            day_lo = df30.iloc[idx-48:idx]['low'].min()
+            swept_lo = (c['low'] <= day_lo) and (c_p > day_lo) and (c_sk > c_sd)
+            swept_hi = (c['high'] >= day_hi) and (c_p < day_hi) and (c_sk < c_sd)
+
+            cross_up = (p_p <= p_zl) and (c_p > c_zl) and (c_zl >= p_zl * 0.999)
+            cross_dn = (p_p >= p_zl) and (c_p < c_zl) and (c_zl <= p_zl * 1.001)
+            pb_long = (trend_1h == "LONG") and (c_p > c_zl) and (c_zl > p_zl) and (c_sk > c_sd) and (p_sk <= p_sd) and (c_sk < 65)
+            pb_short = (trend_1h == "SHORT") and (c_p < c_zl) and (c_zl < p_zl) and (c_sk < c_sd) and (p_sk >= p_sd) and (c_sk > 35)
+
+            if (cross_up and c_sk > c_sd and c_sk < 88) or pb_long or swept_lo:
+                reason = "Снято дно 24H + откуп" if swept_lo else ("Пробой 30M ZLSMA вверх" if cross_up else "Откат по тренду 1H + ZLSMA")
+                sl = round(float(min(c_zl, df30['low'].iloc[idx-4:idx+1].min())) * 0.997, 4)
+                tp = round(live_p + (live_p - sl) * 2.5, 4)
+                trades[name], last_sig[name] = {"side": "LONG", "entry": live_p, "sl": sl, "be": False}, ts
+                send_telegram(f"🚀 <b>LONG #{name}</b> ({reason})\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n30M ZLSMA: <code>{c_zl}</code> | StochRSI: {c_sk}/{c_sd} | 1H: {trend_1h}")
+                break
+
+            elif (cross_dn and c_sk < c_sd and c_sk > 12) or pb_short or swept_hi:
+                reason = "Снят пик 24H + отбой" if swept_hi else ("Пробой 30M ZLSMA вниз" if cross_dn else "Откат по тренду 1H + ZLSMA")
+                sl = round(float(max(c_zl, df30['high'].iloc[idx-4:idx+1].max())) * 1.003, 4)
+                tp = round(live_p - (sl - live_p) * 2.5, 4)
+                trades[name], last_sig[name] = {"side": "SHORT", "entry": live_p, "sl": sl, "be": False}, ts
+                send_telegram(f"🔻 <b>SHORT #{name}</b> ({reason})\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n30M ZLSMA: <code>{c_zl}</code> | StochRSI: {c_sk}/{c_sd} | 1H: {trend_1h}")
+                break
 
         return line
     except Exception as e:
@@ -145,4 +153,4 @@ if __name__ == "__main__":
     res_list = [r for n, s in MONETS.items() if (r := analyze(n, s, st["active_trades"], st["last_signals"])) and not time.sleep(1.5)]
     save_state(st)
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        send_telegram("📡 <b>Снайпер подкручен под ваш StochRSI + 30M ZLSMA!</b>\n\n" + "\n".join(res_list))
+        send_telegram("📡 <b>Единый Снайпер (30M ZLSMA + StochRSI + 24H дно/пик) готов!</b>\n\n" + "\n".join(res_list))
