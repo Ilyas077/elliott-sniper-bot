@@ -26,12 +26,8 @@ jobs:
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |
-          if [ "${{ github.event.inputs.mode }}" == "backtest" ]; then
-            python bot.py backtest
-          else
-            python bot.py
-          fi
+          BOT_MODE: ${{ github.event.inputs.mode }}
+        run: python bot.py
       - name: Save state
         run: |
           git config --local user.email "action@github.com"
