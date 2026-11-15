@@ -167,6 +167,10 @@ def run_backtest():
     send_tg(f"📊 <b>БЭКТЕСТ SIGNAL BOT V2 (1500 свечей 15M)</b>\n• Сделок: <b>{len(all_r)}</b> | Winrate: <b>{round(len(wins)/len(all_r)*100, 1)}%</b>\n• Profit Factor: <b>{round(sum(wins)/max(sum(losses), 1e-9), 2)}</b>\n• Total R: <b>{round(sum(all_r), 2)}R</b> | Max DD: <b>-{round(dd, 2)}R</b>\n🔹 BREAKOUT: {len(stats['BREAKOUT'])} ({round(sum(stats['BREAKOUT']), 2)}R)\n🔸 PULLBACK: {len(stats['PULLBACK'])} ({round(sum(stats['PULLBACK']), 2)}R)")
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "backtest": run_backtest()
+    if os.environ.get("BOT_MODE") == "backtest":
+        run_backtest()
+    else:
+        run_live()
+
 
     else: run_live()
