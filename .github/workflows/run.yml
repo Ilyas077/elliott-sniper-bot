@@ -1,8 +1,14 @@
-name: Elliott Sniper 24/7
+name: Signal Bot V2
+
 on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Режим запуска (live или backtest)'
+        required: true
+        default: 'live'
 
 permissions:
   contents: write
@@ -15,12 +21,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install pandas numpy requests
+      - run: pip install pandas numpy requests matplotlib
       - name: Run bot
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: python bot.py
+        run: |
+          if [ "${{ github.event.inputs.mode }}" == "backtest" ]; then
+            python bot.py backtest
+          else
+            python bot.py
+          fi
       - name: Save state
         run: |
           git config --local user.email "action@github.com"
