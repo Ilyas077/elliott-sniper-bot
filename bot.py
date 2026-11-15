@@ -58,66 +58,48 @@ def calc_zlsma_tv(series, length=32):
     l2 = lsma(l1)
     return l1 + (l1 - l2)
 
+# Точный Stoch RSI как на вашем графике TradingView (10, 3, 14, 14, ohlc4)
 def calc(df):
     ohlc4 = (df['open'] + df['high'] + df['low'] + df['close']) / 4.0
     df['zlsma'] = calc_zlsma_tv(ohlc4, 32)
-    d = df['close'].diff()
-    df['rsi'] = 100 - (100 / (1 + (d.where(d > 0, 0).rolling(14).mean() / (-d.where(d < 0, 0)).rolling(14).mean())))
-    l14, h14 = df['low'].rolling(14).min(), df['high'].rolling(14).max()
-    df['sk'] = (100 * (df['close'] - l14) / (h14 - l14)).rolling(3).mean()
+    d = ohlc4.diff()
+    gain = d.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-d.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+    rsi = 100 - (100 / (1 + (gain / loss.replace(0, 1e-9))))
+    min_r, max_r = rsi.rolling(14).min(), rsi.rolling(14).max()
+    stoch_r = 100 * (rsi - min_r) / (max_r - min_r).replace(0, 1e-9)
+    df['sk'] = stoch_r.rolling(10).mean()
     df['sd'] = df['sk'].rolling(3).mean()
+    df['rsi'] = rsi
     return df
-
-def get_pivots(df, w):
-    piv = []
-    for i in range(w, len(df) - w):
-        if df['high'].iloc[i] == df['high'].iloc[i-w:i+w+1].max(): piv.append({'type': 'HIGH', 'price': df['high'].iloc[i]})
-        elif df['low'].iloc[i] == df['low'].iloc[i-w:i+w+1].min(): piv.append({'type': 'LOW', 'price': df['low'].iloc[i]})
-    clean = []
-    for p in piv:
-        if not clean or clean[-1]['type'] != p['type']: clean.append(p)
-    return clean
-
-def check_elliott(w, st='BULL'):
-    if len(w) < 9: return False, "Мало точек"
-    p0, p1, p2, p3, p4, p5, _, _, _ = w[-9:]
-    if st == 'BULL' and p0['type'] == 'LOW':
-        l1, l3, l5 = p1['price'] - p0['price'], p3['price'] - p2['price'], p5['price'] - p4['price']
-        r1, r2, r3 = p2['price'] > p0['price'], not (l3 < l1 and l3 < l5), p4['price'] > p1['price']
-        diag = (not r3) and (l3 < l1) and (p4['price'] > p2['price'])
-    elif st == 'BEAR' and p0['type'] == 'HIGH':
-        l1, l3, l5 = p0['price'] - p1['price'], p2['price'] - p3['price'], p4['price'] - p5['price']
-        r1, r2, r3 = p2['price'] < p0['price'], not (l3 < l1 and l3 < l5), p4['price'] < p1['price']
-        diag = (not r3) and (l3 < l1) and (p4['price'] < p2['price'])
-    else: return False, "Смещение"
-    return (True, "ВАЛИДНА") if (r1 and r2 and (r3 or diag)) else (False, "Нарушены аксиомы")
 
 def analyze(name, sym, trades, last_sig):
     try:
         df1, df30 = calc(get_live_candles(sym, '1h')), calc(get_live_candles(sym, '30m'))
-        piv30 = get_pivots(df30, 5)
         c1, p1 = df1.iloc[-2], df1.iloc[-3]
         live_p = round(float(df30.iloc[-1]['close']), 4)
         cur, prv = df30.iloc[-2], df30.iloc[-3]
 
-        # Ориентир 1H по ZLSMA 32
         h1_bull = (c1['close'] >= c1['zlsma']) and (c1['zlsma'] > p1['zlsma'])
         h1_bear = (c1['close'] <= c1['zlsma']) and (c1['zlsma'] < p1['zlsma'])
         trend_1h = "LONG" if h1_bull else ("SHORT" if h1_bear else "WAIT")
 
-        # Вход и выход 30M по ZLSMA 32 + разворот Стохастика
-        cp, rsi1, rsi30 = round(float(cur['close']), 4), round(c1['rsi'], 1), round(cur['rsi'], 1)
+        cp, pp = round(float(cur['close']), 4), float(prv['close'])
         zl, pzl = round(float(cur['zlsma']), 4), float(prv['zlsma'])
-        in_long_zl = (cp >= zl) and (cur['high'] >= zl) and (zl > pzl)
-        in_short_zl = (cp <= zl) and (cur['low'] <= zl) and (zl < pzl)
+        sk, sd = round(float(cur['sk']), 1), round(float(cur['sd']), 1)
+        psk, psd = float(prv['sk']), float(prv['sd'])
 
-        sk, sd, psk, psd = cur['sk'], cur['sd'], prv['sk'], prv['sd']
-        up = (sk < 40) and (sk > sd) and (psk <= psd or psk < 40)
-        dn = (sk > 60) and (sk < sd) and (psk >= psd or psk > 60)
+        # 1. Пробой и закрепление за 30M ZLSMA 32
+        cross_up_zl = (pp <= pzl) and (cp > zl) and (zl >= pzl * 0.999)
+        cross_dn_zl = (pp >= pzl) and (cp < zl) and (zl <= pzl * 1.001)
 
-        zl_tag = f"🟢Над 30M ZLSMA ({zl})" if cp >= zl else f"🔴Под 30M ZLSMA ({zl})"
-        print(f"=== {name} | ${live_p} | 1H: {trend_1h} | {zl_tag} ===")
-        line = f"• <b>{name}</b> (${live_p}): 1H {trend_1h} | {zl_tag}"
+        # 2. Откат внутри тренда + разворот Stoch RSI
+        pullback_long = (trend_1h == "LONG") and (cp > zl) and (zl > pzl) and (sk > sd) and (psk <= psd) and (sk < 65)
+        pullback_short = (trend_1h == "SHORT") and (cp < zl) and (zl < pzl) and (sk < sd) and (psk >= psd) and (sk > 35)
+
+        zl_tag = f"🟢Над ZLSMA ({zl})" if cp >= zl else f"🔴Под ZLSMA ({zl})"
+        print(f"=== {name} | ${live_p} | 1H: {trend_1h} | {zl_tag} | StochRSI: {sk}/{sd} ===")
+        line = f"• <b>{name}</b> (${live_p}): 1H {trend_1h} | {zl_tag} | SRSI {sk}"
 
         pos = trades.get(name)
         if pos:
@@ -138,18 +120,21 @@ def analyze(name, sym, trades, last_sig):
 
         ts = str(cur['ts'])
         if last_sig.get(name) == ts: return line
-        if trend_1h == "LONG" and rsi1 < 72 and in_long_zl and up:
-            ok, msg = check_elliott(piv30, 'BULL')
-            sl = round(float(min(zl, df30['low'].iloc[-6:-1].min())) * 0.998, 4)
+
+        if (cross_up_zl and sk > sd and sk < 88) or pullback_long:
+            reason = "Пробой 30M ZLSMA вверх" if cross_up_zl else "Откат по тренду 1H + ZLSMA"
+            sl = round(float(min(zl, df30['low'].iloc[-5:-1].min())) * 0.997, 4)
             tp = round(live_p + (live_p - sl) * 2.5, 4)
             trades[name], last_sig[name] = {"side": "LONG", "entry": live_p, "sl": sl, "be": False}, ts
-            send_telegram(f"🚀 <b>LONG #{name} (1H + 30M ZLSMA)</b>\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n30M ZLSMA: <code>{zl}</code> | RSI: {rsi1}/{rsi30} | Волны: {msg} ({'✅' if ok else '⚠️'})")
-        elif trend_1h == "SHORT" and rsi1 > 28 and in_short_zl and dn:
-            ok, msg = check_elliott(piv30, 'BEAR')
-            sl = round(float(max(zl, df30['high'].iloc[-6:-1].max())) * 1.002, 4)
+            send_telegram(f"🚀 <b>LONG #{name}</b> ({reason})\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n30M ZLSMA: <code>{zl}</code> | StochRSI: {sk}/{sd} | 1H: {trend_1h}")
+
+        elif (cross_dn_zl and sk < sd and sk > 12) or pullback_short:
+            reason = "Пробой 30M ZLSMA вниз" if cross_dn_zl else "Откат по тренду 1H + ZLSMA"
+            sl = round(float(max(zl, df30['high'].iloc[-5:-1].max())) * 1.003, 4)
             tp = round(live_p - (sl - live_p) * 2.5, 4)
             trades[name], last_sig[name] = {"side": "SHORT", "entry": live_p, "sl": sl, "be": False}, ts
-            send_telegram(f"🔻 <b>SHORT #{name} (1H + 30M ZLSMA)</b>\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n30M ZLSMA: <code>{zl}</code> | RSI: {rsi1}/{rsi30} | Волны: {msg} ({'✅' if ok else '⚠️'})")
+            send_telegram(f"🔻 <b>SHORT #{name}</b> ({reason})\nВход: <code>{live_p}</code> | SL: <code>{sl}</code> | TP: <code>{tp}</code>\n30M ZLSMA: <code>{zl}</code> | StochRSI: {sk}/{sd} | 1H: {trend_1h}")
+
         return line
     except Exception as e:
         print(f"Ошибка {name}: {e}")
@@ -160,4 +145,4 @@ if __name__ == "__main__":
     res_list = [r for n, s in MONETS.items() if (r := analyze(n, s, st["active_trades"], st["last_signals"])) and not time.sleep(1.5)]
     save_state(st)
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        send_telegram("📡 <b>Снайпер переведен на 1H + 30M ZLSMA 32!</b>\n\n" + "\n".join(res_list))
+        send_telegram("📡 <b>Снайпер подкручен под ваш StochRSI + 30M ZLSMA!</b>\n\n" + "\n".join(res_list))
