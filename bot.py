@@ -171,6 +171,3 @@ if __name__ == "__main__":
         run_backtest()
     else:
         run_live()
-
-
-    else: run_live()
