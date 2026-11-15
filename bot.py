@@ -7,7 +7,13 @@ import matplotlib.pyplot as plt
 
 TG_TOKEN = "".join((os.environ.get("TG_TOKEN") or "").split())
 TG_CHAT_ID = "".join((os.environ.get("TG_CHAT_ID") or "").split())
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT",
+    "XRPUSDT", "AVAXUSDT", "INJUSDT", "AAVEUSDT",
+    "ARBUSDT", "JUPUSDT", "LDOUSDT", "SUIUSDT",
+    "UNIUSDT", "TAOUSDT"
+]
+
 STATE_FILE = "state.json"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
