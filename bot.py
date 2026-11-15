@@ -7,13 +7,7 @@ import matplotlib.pyplot as plt
 
 TG_TOKEN = "".join((os.environ.get("TG_TOKEN") or "").split())
 TG_CHAT_ID = "".join((os.environ.get("TG_CHAT_ID") or "").split())
-SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT",
-    "XRPUSDT", "AVAXUSDT", "INJUSDT", "AAVEUSDT",
-    "ARBUSDT", "JUPUSDT", "LDOUSDT", "SUIUSDT",
-    "UNIUSDT", "TAOUSDT"
-]
-
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "AVAXUSDT", "INJUSDT", "AAVEUSDT", "ARBUSDT", "JUPUSDT", "LDOUSDT", "SUIUSDT", "UNIUSDT", "TAOUSDT"]
 STATE_FILE = "state.json"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
@@ -26,7 +20,8 @@ MIRRORS = [
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f: return json.load(f)
+            d = json.load(open(STATE_FILE, "r", encoding="utf-8"))
+            return d if "sent_signals" in d else {"sent_signals": {}}
         except Exception: pass
     return {"sent_signals": {}}
 
@@ -70,17 +65,21 @@ def add_ind(df):
     return df
 
 def trend_1h(r):
-    if r["adx"] < 18: return "FLAT"
-    if r["ema50"] > r["ema200"] and r["close"] > r["ema200"]: return "LONG"
-    if r["ema50"] < r["ema200"] and r["close"] < r["ema200"]: return "SHORT"
+    if r["adx"] < 23: return "FLAT"
+    if r["ema21"] > r["ema50"] > r["ema200"] and r["close"] > r["ema50"]: return "LONG"
+    if r["ema21"] < r["ema50"] < r["ema200"] and r["close"] < r["ema50"]: return "SHORT"
     return "FLAT"
 
 def check_setup(cur, prv, t1h):
-    v_ok = cur["vol"] > cur["vol_sma"]
-    if t1h == "LONG" and prv["ema9"] <= prv["ema21"] and cur["ema9"] > cur["ema21"] and cur["rsi"] > 50 and cur["macd_h"] > 0 and v_ok: return "LONG", "BREAKOUT"
-    if t1h == "SHORT" and prv["ema9"] >= prv["ema21"] and cur["ema9"] < cur["ema21"] and cur["rsi"] < 50 and cur["macd_h"] < 0 and v_ok: return "SHORT", "BREAKOUT"
-    if t1h == "LONG" and cur["ema9"] > cur["ema21"] and prv["low"] <= prv["ema21"] * 1.001 and cur["close"] > cur["ema21"] and cur["close"] > cur["open"] and cur["rsi"] > 50 and cur["macd_h"] > 0 and v_ok: return "LONG", "PULLBACK"
-    if t1h == "SHORT" and cur["ema9"] < cur["ema21"] and prv["high"] >= prv["ema21"] * 0.999 and cur["close"] < cur["ema21"] and cur["close"] < cur["open"] and cur["rsi"] < 50 and cur["macd_h"] < 0 and v_ok: return "SHORT", "PULLBACK"
+    v_ok = cur["vol"] > cur["vol_sma"] * 0.9
+    if t1h == "LONG" and cur["ema9"] > cur["ema21"] > cur["ema50"]:
+        touched = prv["low"] <= prv["ema21"] * 1.001
+        if touched and cur["close"] > cur["ema21"] and cur["close"] > cur["open"] and (52 <= cur["rsi"] <= 68) and cur["macd_h"] > 0 and v_ok:
+            return "LONG", "PULLBACK V3"
+    if t1h == "SHORT" and cur["ema9"] < cur["ema21"] < cur["ema50"]:
+        touched = prv["high"] >= prv["ema21"] * 0.999
+        if touched and cur["close"] < cur["ema21"] and cur["close"] < cur["open"] and (32 <= cur["rsi"] <= 48) and cur["macd_h"] < 0 and v_ok:
+            return "SHORT", "PULLBACK V3"
     return None, None
 
 def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
@@ -93,6 +92,7 @@ def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
         ax.bar(i, abs(r["close"] - r["open"]), bottom=min(r["open"], r["close"]), width=0.6, color=col)
     ax.plot(sub.index, sub["ema9"], color="#2962ff", lw=1.2, label="EMA 9")
     ax.plot(sub.index, sub["ema21"], color="#ff9800", lw=1.2, label="EMA 21")
+    ax.plot(sub.index, sub["ema50"], color="#ab47bc", lw=1.2, label="EMA 50")
     ax.axhline(entry, color="#ffffff", ls="--", lw=1, label=f"Entry {entry}")
     ax.axhline(sl, color="#f23645", lw=1.2, label=f"SL {sl}")
     ax.axhline(tp1, color="#089981", ls=":", lw=1.2, label=f"TP1 {tp1}")
@@ -109,6 +109,8 @@ def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
 
 def run_live():
     st, summary = load_state(), []
+    df_btc = fetch_candles("BTCUSDT", "1h", 250)
+    btc_t = trend_1h(add_ind(df_btc).iloc[-2]) if df_btc is not None else "FLAT"
     for sym in SYMBOLS:
         df1, df15 = fetch_candles(sym, "1h", 250), fetch_candles(sym, "15m", 150)
         if df1 is None or df15 is None: continue
@@ -120,19 +122,19 @@ def run_live():
         key = f"{sym}_{int(cur['ts'])}"
         if key in st["sent_signals"]: continue
         side, setup = check_setup(cur, prv, t1)
-        if side:
-            entry, risk = round(float(cur["close"]), 4), float(cur["atr"]) * 1.5
+        if side and (sym == "BTCUSDT" or btc_t in (side, "FLAT")):
+            entry, risk = round(float(cur["close"]), 4), float(cur["atr"]) * 2.2
             sl, tp1, tp2 = (round(entry - risk, 4), round(entry + risk, 4), round(entry + risk * 2, 4)) if side == "LONG" else (round(entry + risk, 4), round(entry - risk, 4), round(entry - risk * 2, 4))
-            cap = f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>SIGNAL BOT V2 — {side} ({setup})</b>\n\n🪙 <b>#{sym}</b> (15M / 1H)\n💵 Entry: <code>{entry}</code>\n🛑 SL: <code>{sl}</code>\n🎯 TP1 (50%): <code>{tp1}</code>\n🎯 TP2 (50%): <code>{tp2}</code>\n📊 RSI: <b>{round(cur['rsi'], 1)}</b> | ADX: <b>{round(r1['adx'], 1)}</b>"
+            cap = f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>SIGNAL BOT V3 — {side} ({setup})</b>\n\n🪙 <b>#{sym}</b> (15M / 1H)\n💵 Entry: <code>{entry}</code>\n🛑 SL (2.2 ATR): <code>{sl}</code>\n🎯 TP1 (50%, 1R): <code>{tp1}</code>\n🎯 TP2 (50%, 2R): <code>{tp2}</code>\n📊 RSI: <b>{round(cur['rsi'], 1)}</b> | ADX: <b>{round(r1['adx'], 1)}</b> | BTC: {btc_t}"
             send_tg(cap, make_chart(df15, sym, side, setup, entry, sl, tp1, tp2))
             st["sent_signals"][key] = side
         time.sleep(0.4)
     save_state(st)
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        send_tg("📡 <b>SIGNAL BOT V2 — Тестовый запуск пройден!</b>\n\n" + "\n".join(summary))
+        send_tg(f"📡 <b>SIGNAL BOT V3 (PULLBACK + BTC фильтр)</b>\nПоводырь BTC: <b>{btc_t}</b>\n\n" + "\n".join(summary))
 
 def run_backtest():
-    stats = {"BREAKOUT": [], "PULLBACK": []}
+    res = []
     for sym in SYMBOLS:
         df1, df15 = fetch_candles(sym, "1h", 1000), fetch_candles(sym, "15m", 1500)
         if df1 is None or df15 is None: continue
@@ -142,32 +144,29 @@ def run_backtest():
         trade = None
         for i in range(50, len(df15) - 1):
             cur, prv = df15.iloc[i], df15.iloc[i - 1]
-            if trade:
-                side, setup, entry, sl, tp1, tp2, hit1 = trade
+            if trade is not None:
+                side, entry, sl, tp1, tp2, hit1 = trade
                 if side == "LONG":
-                    if cur["low"] <= sl: stats[setup].append(0.0 if hit1 else -1.0); trade = None
-                    elif not hit1 and cur["high"] >= tp1: trade[6], trade[3] = True, entry
-                    elif hit1 and cur["high"] >= tp2: stats[setup].append(1.5); trade = None
+                    if cur["low"] <= sl: res.append(0.5 if hit1 else -1.0); trade = None
+                    elif not hit1 and cur["high"] >= tp1: trade = (side, entry, entry, tp1, tp2, True)
+                    elif hit1 and cur["high"] >= tp2: res.append(1.5); trade = None
                 else:
-                    if cur["high"] >= sl: stats[setup].append(0.0 if hit1 else -1.0); trade = None
-                    elif not hit1 and cur["low"] <= tp1: trade[6], trade[3] = True, entry
-                    elif hit1 and cur["low"] <= tp2: stats[setup].append(1.5); trade = None
+                    if cur["high"] >= sl: res.append(0.5 if hit1 else -1.0); trade = None
+                    elif not hit1 and cur["low"] <= tp1: trade = (side, entry, entry, tp1, tp2, True)
+                    elif hit1 and cur["low"] <= tp2: res.append(1.5); trade = None
                 continue
             hr = h_map.get(((int(cur["ts"]) // 3600000) - 1) * 3600000)
             if not hr: continue
-            side, setup = check_setup(cur, prv, trend_1h(hr))
+            side, _ = check_setup(cur, prv, trend_1h(hr))
             if side:
-                e, r = cur["close"], cur["atr"] * 1.5
-                trade = [side, setup, e, e - r, e + r, e + r * 2, False] if side == "LONG" else [side, setup, e, e + r, e - r, e - r * 2, False]
-    all_r = stats["BREAKOUT"] + stats["PULLBACK"]
-    if not all_r: send_tg("📊 Бэктест: сделок не найдено."); return
-    wins, losses = [x for x in all_r if x > 0], [abs(x) for x in all_r if x < 0]
-    eq = np.cumsum(all_r)
+                e, r = cur["close"], cur["atr"] * 2.2
+                trade = (side, e, e - r, e + r, e + r * 2, False) if side == "LONG" else (side, e, e + r, e - r, e - r * 2, False)
+    if not res: send_tg("📊 Бэктест V3: сделок не найдено."); return
+    wins, losses = [x for x in res if x > 0], [abs(x) for x in res if x < 0]
+    eq = np.cumsum(res)
     dd = np.max(np.maximum.accumulate(eq) - eq)
-    send_tg(f"📊 <b>БЭКТЕСТ SIGNAL BOT V2 (1500 свечей 15M)</b>\n• Сделок: <b>{len(all_r)}</b> | Winrate: <b>{round(len(wins)/len(all_r)*100, 1)}%</b>\n• Profit Factor: <b>{round(sum(wins)/max(sum(losses), 1e-9), 2)}</b>\n• Total R: <b>{round(sum(all_r), 2)}R</b> | Max DD: <b>-{round(dd, 2)}R</b>\n🔹 BREAKOUT: {len(stats['BREAKOUT'])} ({round(sum(stats['BREAKOUT']), 2)}R)\n🔸 PULLBACK: {len(stats['PULLBACK'])} ({round(sum(stats['PULLBACK']), 2)}R)")
+    send_tg(f"📊 <b>БЭКТЕСТ SIGNAL BOT V3 (PULLBACK + 2.2 ATR + БУ)</b>\n• Сделок: <b>{len(res)}</b> | Winrate (в плюс/БУ): <b>{round(len(wins)/len(res)*100, 1)}%</b>\n• Profit Factor: <b>{round(sum(wins)/max(sum(losses), 1e-9), 2)}</b>\n• Total R: <b>{round(sum(res), 2)}R</b> | Max DD: <b>-{round(dd, 2)}R</b>")
 
 if __name__ == "__main__":
-    if os.environ.get("BOT_MODE") == "backtest":
-        run_backtest()
-    else:
-        run_live()
+    if os.environ.get("BOT_MODE") == "backtest": run_backtest()
+    else: run_live()
