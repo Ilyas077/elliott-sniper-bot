@@ -1,8 +1,6 @@
-name: Signal Bot V2
+name: Signal Bot V4
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -21,6 +19,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: '**/bot.py'
       - run: pip install pandas numpy requests matplotlib
       - name: Run bot
         env:
