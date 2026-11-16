@@ -17,7 +17,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 TG_BASE = base64.b64decode("aHR0cHM6Ly9hcGkudGVsZWdyYW0ub3JnL2JvdA==").decode()
 MIRRORS = [
-    base64.b64decode("aHR0cHM6Ly9mYXBpLmJpbmFuY2UuY29tL2ZhcGkvdjEva2xpbmVz").decode(),
+    
     base64.b64decode("aHR0cHM6Ly9kYXRhLWFwaS5iaW5hbmNlLnZpc2lvbi9hcGkvdjMva2xpbmVz").decode()
 ]
 
