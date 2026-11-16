@@ -130,8 +130,6 @@ def run_live():
             st["sent_signals"][key] = side
         time.sleep(0.4)
     save_state(st)
-    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        send_tg(f"📡 <b>SIGNAL BOT V3 (PULLBACK + BTC фильтр)</b>\nПоводырь BTC: <b>{btc_t}</b>\n\n" + "\n".join(summary))
 
 def run_backtest():
     res = []
