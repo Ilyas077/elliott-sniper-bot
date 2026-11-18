@@ -21,10 +21,11 @@ MIRRORS = [
 ]
 
 def wait_for_candle_close():
+    """Ждём закрытия текущей 5-минутной свечи."""
     now = time.time()
-    rem = 900 - (now % 900)
-    if 0 < rem <= 120:
-        print(f"Ждём закрытия свечи: {round(rem, 1)} сек...")
+    rem = 300 - (now % 300)
+    if 0 < rem <= 60:
+        print(f"Ждём закрытия 5m свечи: {round(rem, 1)} сек...")
         time.sleep(rem + 1.5)
 
 def load_state():
@@ -104,48 +105,62 @@ def add_ind(df):
 def trend_1h(r):
     if r["adx"] < 14:
         return "FLAT"
-    if r["ema21"] > r["ema50"] and r["close"] > r["ema50"]:
+    if r["ema9"] > r["ema21"] and r["close"] > r["ema21"]:
         return "LONG"
-    if r["ema21"] < r["ema50"] and r["close"] < r["ema50"]:
+    if r["ema9"] < r["ema21"] and r["close"] < r["ema21"]:
         return "SHORT"
     return "FLAT"
 
-def check_setup(df15, t1h):
-    cur = df15.iloc[-2]
-    prv = df15.iloc[-3]
-    recent = df15.iloc[-14:-2]
-    
-    v_ok = cur["vol"] > cur["vol_sma"] * 0.70
-    v_impulse = cur["vol"] > cur["vol_sma"] * 1.25
+def check_combined_setup(df15, df5, r1, t1h):
+    """
+    Связка 15M + 5M:
+    15M подтверждает направление и проверяет, что цена не улетела на полпути.
+    5M дает точную раннюю точку входа.
+    """
+    c15 = df15.iloc[-2]
+    c5 = df5.iloc[-2]
+    p5 = df5.iloc[-3]
+    recent_5m = df5.iloc[-26:-2]  # 2 часа на 5-минутке
 
-    # --- ЛОНГ ---
-    if t1h == "LONG":
-        if cur["close"] > cur["ema9"]:
-            touched = (prv["low"] <= prv["ema21"] * 1.004) or (cur["low"] <= cur["ema21"] * 1.004)
-            if touched and cur["close"] > cur["ema21"] and cur["close"] > cur["open"] and (43 <= cur["rsi"] <= 72) and v_ok:
-                return "LONG", "PULLBACK"
-        
-        box_high = recent["high"].max()
-        if (cur["close"] > box_high) and (prv["close"] <= box_high) and (cur["close"] > cur["open"]):
-            if (cur["ema9"] > cur["ema21"]) and (52 <= cur["rsi"] <= 74) and v_impulse:
-                return "LONG", "IMPULSE BREAKOUT"
+    # 1. Защита от входа в хвост движения (на 15m и 1h цена еще близко к EMA 21)
+    dist_15m = abs(c15["close"] - c15["ema21"]) / c15["ema21"]
+    dist_1h = abs(r1["close"] - r1["ema21"]) / r1["ema21"]
+    if dist_15m > 0.015 or dist_1h > 0.025:
+        return None, None
 
-    # --- ШОРТ ---
-    if t1h == "SHORT":
-        if cur["close"] < cur["ema9"]:
-            touched = (prv["high"] >= prv["ema21"] * 0.996) or (cur["high"] >= cur["ema21"] * 0.996)
-            if touched and cur["close"] < cur["ema21"] and cur["close"] < cur["open"] and (28 <= cur["rsi"] <= 57) and v_ok:
-                return "SHORT", "PULLBACK"
-                
-        box_low = recent["low"].min()
-        if (cur["close"] < box_low) and (prv["close"] >= box_low) and (cur["close"] < cur["open"]):
-            if (cur["ema9"] < cur["ema21"]) and (26 <= cur["rsi"] <= 48) and v_impulse:
-                return "SHORT", "IMPULSE BREAKOUT"
+    v5_ok = c5["vol"] > c5["vol_sma"] * 0.75
+    v5_impulse = c5["vol"] > c5["vol_sma"] * 1.25
+
+    # --- ЛОНГ (1H вверх + 15M подтверждает силу, но не перегрета) ---
+    if t1h == "LONG" and c15["close"] > c15["ema21"] and (45 <= c15["rsi"] <= 68):
+        # Точка входа А: микро-откат к EMA 21 на 5-минутке и отскок вверх
+        touched_5m = (p5["low"] <= p5["ema21"] * 1.003) or (c5["low"] <= c5["ema21"] * 1.003)
+        if touched_5m and c5["close"] > c5["ema9"] and c5["close"] > c5["open"] and (42 <= c5["rsi"] <= 68) and v5_ok:
+            return "LONG", "15M+5M PULLBACK"
+
+        # Точка входа Б: ранний пробой 2-часовой базы на 5-минутке
+        box_high = recent_5m["high"].max()
+        if (c5["close"] > box_high) and (p5["close"] <= box_high) and (c5["close"] > c5["open"]):
+            if c5["ema9"] > c5["ema21"] and (50 <= c5["rsi"] <= 70) and v5_impulse:
+                return "LONG", "15M+5M BREAKOUT"
+
+    # --- ШОРТ (1H вниз + 15M подтверждает слабость, но не перепродана) ---
+    if t1h == "SHORT" and c15["close"] < c15["ema21"] and (32 <= c15["rsi"] <= 55):
+        # Точка входа А: микро-откат к EMA 21 на 5-минутке и отбой вниз
+        touched_5m = (p5["high"] >= p5["ema21"] * 0.997) or (c5["high"] >= c5["ema21"] * 0.997)
+        if touched_5m and c5["close"] < c5["ema9"] and c5["close"] < c5["open"] and (32 <= c5["rsi"] <= 58) and v5_ok:
+            return "SHORT", "15M+5M PULLBACK"
+
+        # Точка входа Б: ранний пробой поддержки вниз на 5-минутке
+        box_low = recent_5m["low"].min()
+        if (c5["close"] < box_low) and (p5["close"] >= box_low) and (c5["close"] < c5["open"]):
+            if c5["ema9"] < c5["ema21"] and (30 <= c5["rsi"] <= 50) and v5_impulse:
+                return "SHORT", "15M+5M BREAKOUT"
 
     return None, None
 
-def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
-    sub = df.tail(50).reset_index(drop=True)
+def make_chart(df5, sym, side, setup, entry, sl, tp1, tp2):
+    sub = df5.tail(60).reset_index(drop=True)
     fig, ax = plt.subplots(figsize=(9, 4.5), facecolor="#131722")
     ax.set_facecolor("#131722")
     for i, r in sub.iterrows():
@@ -159,7 +174,7 @@ def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
     ax.axhline(sl, color="#f23645", lw=1.2, label=f"SL {sl}")
     ax.axhline(tp1, color="#089981", ls=":", lw=1.2, label=f"TP1 (+2.5%) {tp1}")
     ax.axhline(tp2, color="#00e676", lw=1.2, label=f"TP2 {tp2}")
-    ax.set_title(f"{sym} 15M | {side} ({setup})", color="white", fontsize=11)
+    ax.set_title(f"{sym} 5M/15M | {side} ({setup})", color="white", fontsize=11)
     ax.tick_params(colors="#b2b5be")
     ax.legend(facecolor="#1e222d", labelcolor="white", loc="upper left", fontsize=8)
     buf = io.BytesIO()
@@ -175,32 +190,40 @@ def fmt_price(val):
 def run_live():
     wait_for_candle_close()
     st = load_state()
+    now_ts = int(time.time())
+    
     df_btc = fetch_candles("BTCUSDT", "1h", 250)
     btc_t = trend_1h(add_ind(df_btc).iloc[-2]) if df_btc is not None else "FLAT"
-    print(f"Старт проверки. Тренд BTC (1H): {btc_t}")
+    print(f"Старт связки 15M+5M. Тренд BTC (1H): {btc_t}")
     
     signals_found = 0
     for sym in SYMBOLS:
+        # Пауза 1 час после уже отправленного сигнала по монете
+        last_sent = st["sent_signals"].get(sym, 0)
+        if isinstance(last_sent, (int, float)) and (now_ts - last_sent) < 3600:
+            continue
+
         df1 = fetch_candles(sym, "1h", 250)
         df15 = fetch_candles(sym, "15m", 150)
-        if df1 is None or df15 is None:
+        df5 = fetch_candles(sym, "5m", 150)
+        if df1 is None or df15 is None or df5 is None:
             continue
             
-        df1, df15 = add_ind(df1), add_ind(df15)
-        r1, cur = df1.iloc[-2], df15.iloc[-2]
+        df1, df15, df5 = add_ind(df1), add_ind(df15), add_ind(df5)
+        r1 = df1.iloc[-2]
         t1 = trend_1h(r1)
         
-        print(f"{sym}: 1H={t1} | ADX={round(r1['adx'], 1)} | RSI={round(cur['rsi'], 1)}")
-        
-        key = f"{sym}_{int(cur['ts'])}"
-        if key in st["sent_signals"]:
+        if t1 == "FLAT" or (sym != "BTCUSDT" and btc_t not in (t1, "FLAT")):
             continue
-            
-        side, setup = check_setup(df15, t1)
-        if side and (sym == "BTCUSDT" or btc_t in (side, "FLAT")):
+
+        side, setup = check_combined_setup(df15, df5, r1, t1)
+        if side:
             signals_found += 1
-            entry = fmt_price(cur["close"])
-            risk = float(cur["atr"]) * 2.0
+            c5 = df5.iloc[-2]
+            c15 = df15.iloc[-2]
+            entry = fmt_price(c5["close"])
+            # Стоп считаем по волатильности 15M (чтобы не выбило 5-минутным шумом)
+            risk = float(c15["atr"]) * 1.8
             if side == "LONG":
                 sl = fmt_price(entry - risk)
                 tp1 = fmt_price(entry * 1.025)
@@ -211,31 +234,4 @@ def run_live():
                 tp2 = fmt_price(entry - risk * 2.5)
                 
             cap = (
-                f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>SIGNAL BOT V4.2 — {sym}</b>\n"
-                f"Направление: <b>{side}</b> ({setup})\n"
-                f"Таймфрейм: <b>15M</b> (Тренд 1H: {t1})\n\n"
-                f"Вход: <code>{entry}</code>\n"
-                f"Стоп-лосс: <code>{sl}</code>\n"
-                f"Тейк 1 (2.5%): <code>{tp1}</code>\n"
-                f"Тейк 2 (дальше): <code>{tp2}</code>\n\n"
-                f"RSI: <b>{round(cur['rsi'], 1)}</b> | ADX 1H: <b>{round(r1['adx'], 1)}</b>"
-            )
-            chart = make_chart(df15, sym, side, setup, entry, sl, tp1, tp2)
-            send_tg(cap, chart)
-            st["sent_signals"][key] = int(time.time())
-            
-    # Безопасная очистка старых записей (учитывает и числа, и старый текстовый формат)
-    cutoff = int(time.time()) - 86400
-    clean_signals = {}
-    for k, v in st["sent_signals"].items():
-        if isinstance(v, (int, float)) and v > cutoff:
-            clean_signals[k] = int(v)
-        elif isinstance(v, str) and v.isdigit() and int(v) > cutoff:
-            clean_signals[k] = int(v)
-    st["sent_signals"] = clean_signals
-    
-    save_state(st)
-    print(f"Проверка завершена. Найдено сигналов: {signals_found}")
-
-if __name__ == "__main__":
-    run_live()
+                f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>SIGNAL BOT V6.0 (15M+5M) — {sym}</b>\n"
