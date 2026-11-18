@@ -21,7 +21,6 @@ MIRRORS = [
 ]
 
 def wait_for_candle_close():
-    """Ждём закрытия текущей 5-минутной свечи."""
     now = time.time()
     rem = 300 - (now % 300)
     if 0 < rem <= 60:
@@ -112,17 +111,11 @@ def trend_1h(r):
     return "FLAT"
 
 def check_combined_setup(df15, df5, r1, t1h):
-    """
-    Связка 15M + 5M:
-    15M подтверждает направление и проверяет, что цена не улетела на полпути.
-    5M дает точную раннюю точку входа.
-    """
     c15 = df15.iloc[-2]
     c5 = df5.iloc[-2]
     p5 = df5.iloc[-3]
-    recent_5m = df5.iloc[-26:-2]  # 2 часа на 5-минутке
+    recent_5m = df5.iloc[-26:-2]
 
-    # 1. Защита от входа в хвост движения (на 15m и 1h цена еще близко к EMA 21)
     dist_15m = abs(c15["close"] - c15["ema21"]) / c15["ema21"]
     dist_1h = abs(r1["close"] - r1["ema21"]) / r1["ema21"]
     if dist_15m > 0.015 or dist_1h > 0.025:
@@ -131,27 +124,21 @@ def check_combined_setup(df15, df5, r1, t1h):
     v5_ok = c5["vol"] > c5["vol_sma"] * 0.75
     v5_impulse = c5["vol"] > c5["vol_sma"] * 1.25
 
-    # --- ЛОНГ (1H вверх + 15M подтверждает силу, но не перегрета) ---
     if t1h == "LONG" and c15["close"] > c15["ema21"] and (45 <= c15["rsi"] <= 68):
-        # Точка входа А: микро-откат к EMA 21 на 5-минутке и отскок вверх
         touched_5m = (p5["low"] <= p5["ema21"] * 1.003) or (c5["low"] <= c5["ema21"] * 1.003)
         if touched_5m and c5["close"] > c5["ema9"] and c5["close"] > c5["open"] and (42 <= c5["rsi"] <= 68) and v5_ok:
             return "LONG", "15M+5M PULLBACK"
 
-        # Точка входа Б: ранний пробой 2-часовой базы на 5-минутке
         box_high = recent_5m["high"].max()
         if (c5["close"] > box_high) and (p5["close"] <= box_high) and (c5["close"] > c5["open"]):
             if c5["ema9"] > c5["ema21"] and (50 <= c5["rsi"] <= 70) and v5_impulse:
                 return "LONG", "15M+5M BREAKOUT"
 
-    # --- ШОРТ (1H вниз + 15M подтверждает слабость, но не перепродана) ---
     if t1h == "SHORT" and c15["close"] < c15["ema21"] and (32 <= c15["rsi"] <= 55):
-        # Точка входа А: микро-откат к EMA 21 на 5-минутке и отбой вниз
         touched_5m = (p5["high"] >= p5["ema21"] * 0.997) or (c5["high"] >= c5["ema21"] * 0.997)
         if touched_5m and c5["close"] < c5["ema9"] and c5["close"] < c5["open"] and (32 <= c5["rsi"] <= 58) and v5_ok:
             return "SHORT", "15M+5M PULLBACK"
 
-        # Точка входа Б: ранний пробой поддержки вниз на 5-минутке
         box_low = recent_5m["low"].min()
         if (c5["close"] < box_low) and (p5["close"] >= box_low) and (c5["close"] < c5["open"]):
             if c5["ema9"] < c5["ema21"] and (30 <= c5["rsi"] <= 50) and v5_impulse:
@@ -198,7 +185,6 @@ def run_live():
     
     signals_found = 0
     for sym in SYMBOLS:
-        # Пауза 1 час после уже отправленного сигнала по монете
         last_sent = st["sent_signals"].get(sym, 0)
         if isinstance(last_sent, (int, float)) and (now_ts - last_sent) < 3600:
             continue
@@ -222,7 +208,6 @@ def run_live():
             c5 = df5.iloc[-2]
             c15 = df15.iloc[-2]
             entry = fmt_price(c5["close"])
-            # Стоп считаем по волатильности 15M (чтобы не выбило 5-минутным шумом)
             risk = float(c15["atr"]) * 1.8
             if side == "LONG":
                 sl = fmt_price(entry - risk)
@@ -235,3 +220,23 @@ def run_live():
                 
             cap = (
                 f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>SIGNAL BOT V6.0 (15M+5M) — {sym}</b>\n"
+                f"Направление: <b>{side}</b> ({setup})\n"
+                f"Тренд 1H: <b>{t1}</b> (ADX: {round(r1['adx'], 1)})\n\n"
+                f"Вход: <code>{entry}</code>\n"
+                f"Стоп-лосс: <code>{sl}</code>\n"
+                f"Тейк 1 (2.5%): <code>{tp1}</code>\n"
+                f"Тейк 2 (дальше): <code>{tp2}</code>\n\n"
+                f"RSI 5M: <b>{round(c5['rsi'], 1)}</b> | RSI 15M: <b>{round(c15['rsi'], 1)}</b>"
+            )
+            chart = make_chart(df5, sym, side, setup, entry, sl, tp1, tp2)
+            send_tg(cap, chart)
+            st["sent_signals"][sym] = now_ts
+            
+    cutoff = now_ts - 86400
+    clean_signals = {}
+    for k, v in st["sent_signals"].items():
+        if isinstance(v, (int, float)) and v > cutoff:
+            clean_signals[k] = int(v)
+    st["sent_signals"] = clean_signals
+    
+    save_state(st)
