@@ -237,11 +237,12 @@ def run_live():
     for k, v in st["sent_signals"].items():
         if isinstance(v, (int, float)) and v > cutoff:
             clean_signals[k] = int(v)
-    st["sent_signals"] = clean_signals
-    
-        save_state(st)
+        st["sent_signals"] = clean_signals
+
+    save_state(st)
     print(f"Проверка завершена. Найдено сигналов: {signals_found}")
 
 if __name__ == "__main__":
     run_live()
+
 
