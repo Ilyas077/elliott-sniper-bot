@@ -17,17 +17,15 @@ HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 TG_BASE = base64.b64decode("aHR0cHM6Ly9hcGkudGVsZWdyYW0ub3JnL2JvdA==").decode()
 MIRRORS = [
-    
     base64.b64decode("aHR0cHM6Ly9kYXRhLWFwaS5iaW5hbmNlLnZpc2lvbi9hcGkvdjMva2xpbmVz").decode()
 ]
 
 def wait_for_candle_close():
-    """Если скрипт запустился за 1-2 минуты до конца 15-минутки, ждём её закрытия."""
     now = time.time()
     rem = 900 - (now % 900)
     if 0 < rem <= 120:
         print(f"Ждём закрытия свечи: {round(rem, 1)} сек...")
-        time.sleep(rem + 1.5)  # +1.5 сек, чтобы биржа успела сформировать новую свечу
+        time.sleep(rem + 1.5)
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -104,8 +102,8 @@ def add_ind(df):
     return df
 
 def trend_1h(r):
-    # Оптимизированный фильтр тренда: ловит движение раньше
-    if r["adx"] < 18:
+    # Снизили порог ADX до 14, чтобы ловить выход из накопления в самом начале
+    if r["adx"] < 14:
         return "FLAT"
     if r["ema21"] > r["ema50"] and r["close"] > r["ema50"]:
         return "LONG"
@@ -113,21 +111,42 @@ def trend_1h(r):
         return "SHORT"
     return "FLAT"
 
-def check_setup(cur, prv, t1h):
-    v_ok = cur["vol"] > cur["vol_sma"] * 0.75
+def check_setup(df15, t1h):
+    cur = df15.iloc[-2]
+    prv = df15.iloc[-3]
+    recent = df15.iloc[-14:-2]  # Предыдущие 12 свечей (3 часа)
     
-    # ЛОНГ: откат к EMA 21 на восходящем тренде
-    if t1h == "LONG" and cur["ema9"] > cur["ema21"]:
-        touched = (prv["low"] <= prv["ema21"] * 1.003) or (cur["low"] <= cur["ema21"] * 1.003)
-        if touched and cur["close"] > cur["ema21"] and cur["close"] > cur["open"] and (48 <= cur["rsi"] <= 70) and v_ok:
-            return "LONG", "PULLBACK V4"
-            
-    # ШОРТ: откат к EMA 21 на нисходящем тренде
-    if t1h == "SHORT" and cur["ema9"] < cur["ema21"]:
-        touched = (prv["high"] >= prv["ema21"] * 0.997) or (cur["high"] >= cur["ema21"] * 0.997)
-        if touched and cur["close"] < cur["ema21"] and cur["close"] < cur["open"] and (30 <= cur["rsi"] <= 52) and v_ok:
-            return "SHORT", "PULLBACK V4"
-            
+    v_ok = cur["vol"] > cur["vol_sma"] * 0.70
+    v_impulse = cur["vol"] > cur["vol_sma"] * 1.25  # Повышенный объем для пробоя
+
+    # --- ЛОНГ ---
+    if t1h == "LONG":
+        # Сценарий 1: Откат к EMA 21 (классика)
+        if cur["close"] > cur["ema9"]:
+            touched = (prv["low"] <= prv["ema21"] * 1.004) or (cur["low"] <= cur["ema21"] * 1.004)
+            if touched and cur["close"] > cur["ema21"] and cur["close"] > cur["open"] and (43 <= cur["rsi"] <= 72) and v_ok:
+                return "LONG", "PULLBACK"
+        
+        # Сценарий 2: Пробой боковика на объеме (ловит импульсы вроде входа по 73.0)
+        box_high = recent["high"].max()
+        if (cur["close"] > box_high) and (prv["close"] <= box_high) and (cur["close"] > cur["open"]):
+            if (cur["ema9"] > cur["ema21"]) and (52 <= cur["rsi"] <= 74) and v_impulse:
+                return "LONG", "IMPULSE BREAKOUT"
+
+    # --- ШОРТ ---
+    if t1h == "SHORT":
+        # Сценарий 1: Откат к EMA 21
+        if cur["close"] < cur["ema9"]:
+            touched = (prv["high"] >= prv["ema21"] * 0.996) or (cur["high"] >= prv["ema21"] * 0.996)
+            if touched and cur["close"] < cur["ema21"] and cur["close"] < cur["open"] and (28 <= cur["rsi"] <= 57) and v_ok:
+                return "SHORT", "PULLBACK"
+                
+        # Сценарий 2: Пробой поддержки вниз на объеме
+        box_low = recent["low"].min()
+        if (cur["close"] < box_low) and (prv["close"] >= box_low) and (cur["close"] < cur["open"]):
+            if (cur["ema9"] < cur["ema21"]) and (26 <= cur["rsi"] <= 48) and v_impulse:
+                return "SHORT", "IMPULSE BREAKOUT"
+
     return None, None
 
 def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
@@ -143,7 +162,7 @@ def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
     ax.plot(sub.index, sub["ema50"], color="#ab47bc", lw=1.2, label="EMA 50")
     ax.axhline(entry, color="#ffffff", ls="--", lw=1, label=f"Entry {entry}")
     ax.axhline(sl, color="#f23645", lw=1.2, label=f"SL {sl}")
-    ax.axhline(tp1, color="#089981", ls=":", lw=1.2, label=f"TP1 {tp1}")
+    ax.axhline(tp1, color="#089981", ls=":", lw=1.2, label=f"TP1 (+2.5%) {tp1}")
     ax.axhline(tp2, color="#00e676", lw=1.2, label=f"TP2 {tp2}")
     ax.set_title(f"{sym} 15M | {side} ({setup})", color="white", fontsize=11)
     ax.tick_params(colors="#b2b5be")
@@ -173,7 +192,7 @@ def run_live():
             continue
             
         df1, df15 = add_ind(df1), add_ind(df15)
-        r1, cur, prv = df1.iloc[-2], df15.iloc[-2], df15.iloc[-3]
+        r1, cur = df1.iloc[-2], df15.iloc[-2]
         t1 = trend_1h(r1)
         
         print(f"{sym}: 1H={t1} | ADX={round(r1['adx'], 1)} | RSI={round(cur['rsi'], 1)}")
@@ -182,35 +201,36 @@ def run_live():
         if key in st["sent_signals"]:
             continue
             
-        side, setup = check_setup(cur, prv, t1)
+        side, setup = check_setup(df15, t1)
         if side and (sym == "BTCUSDT" or btc_t in (side, "FLAT")):
             signals_found += 1
             entry = fmt_price(cur["close"])
             risk = float(cur["atr"]) * 2.0
             if side == "LONG":
-                sl, tp1, tp2 = fmt_price(entry - risk), fmt_price(entry + risk), fmt_price(entry + risk * 2)
+                sl = fmt_price(entry - risk)
+                tp1 = fmt_price(entry * 1.025)
+                tp2 = fmt_price(entry + risk * 2.5)
             else:
-                sl, tp1, tp2 = fmt_price(entry + risk), fmt_price(entry - risk), fmt_price(entry - risk * 2)
+                sl = fmt_price(entry + risk)
+                tp1 = fmt_price(entry * 0.975)
+                tp2 = fmt_price(entry - risk * 2.5)
                 
             cap = (
-                f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>SIGNAL BOT V4 — {side} ({setup})</b>\n\n"
-                f"🪙 <b>#{sym}</b> (15M / 1H)\n"
-                f"💵 Entry: <code>{entry}</code>\n"
-                f"🛑 SL (2.0 ATR): <code>{sl}</code>\n"
-                f"🎯 TP1 (50%, 1R): <code>{tp1}</code>\n"
-                f"🎯 TP2 (50%, 2R): <code>{tp2}</code>\n"
-                f"📊 RSI: <b>{round(cur['rsi'], 1)}</b> | ADX: <b>{round(r1['adx'], 1)}</b> | BTC: {btc_t}"
+                f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>SIGNAL BOT V4.2 — {sym}</b>\n"
+                f"Направление: <b>{side}</b> ({setup})\n"
+                f"Таймфрейм: <b>15M</b> (Тренд 1H: {t1})\n\n"
+                f"Вход: <code>{entry}</code>\n"
+                f"Стоп-лосс: <code>{sl}</code>\n"
+                f"Тейк 1 (2.5%): <code>{tp1}</code>\n"
+                f"Тейк 2 (дальше): <code>{tp2}</code>\n\n"
+                f"RSI: <b>{round(cur['rsi'], 1)}</b> | ADX 1H: <b>{round(r1['adx'], 1)}</b>"
             )
-            send_tg(cap, make_chart(df15, sym, side, setup, entry, sl, tp1, tp2))
-            st["sent_signals"][key] = side
+            chart = make_chart(df15, sym, side, setup, entry, sl, tp1, tp2)
+            send_tg(cap, chart)
+            st["sent_signals"][key] = int(time.time())
             
-        time.sleep(0.3)
-        
-    # Оставляем в памяти только последние 100 сигналов, чтобы файл не раздувался
-    if len(st["sent_signals"]) > 100:
-        keys = list(st["sent_signals"].keys())[-100:]
-        st["sent_signals"] = {k: st["sent_signals"][k] for k in keys}
-        
+    cutoff = int(time.time()) - 86400
+    st["sent_signals"] = {k: v for k, v in st["sent_signals"].items() if v > cutoff}
     save_state(st)
     print(f"Проверка завершена. Найдено сигналов: {signals_found}")
 
