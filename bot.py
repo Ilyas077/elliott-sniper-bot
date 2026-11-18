@@ -102,7 +102,6 @@ def add_ind(df):
     return df
 
 def trend_1h(r):
-    # Снизили порог ADX до 14, чтобы ловить выход из накопления в самом начале
     if r["adx"] < 14:
         return "FLAT"
     if r["ema21"] > r["ema50"] and r["close"] > r["ema50"]:
@@ -114,20 +113,18 @@ def trend_1h(r):
 def check_setup(df15, t1h):
     cur = df15.iloc[-2]
     prv = df15.iloc[-3]
-    recent = df15.iloc[-14:-2]  # Предыдущие 12 свечей (3 часа)
+    recent = df15.iloc[-14:-2]
     
     v_ok = cur["vol"] > cur["vol_sma"] * 0.70
-    v_impulse = cur["vol"] > cur["vol_sma"] * 1.25  # Повышенный объем для пробоя
+    v_impulse = cur["vol"] > cur["vol_sma"] * 1.25
 
     # --- ЛОНГ ---
     if t1h == "LONG":
-        # Сценарий 1: Откат к EMA 21 (классика)
         if cur["close"] > cur["ema9"]:
             touched = (prv["low"] <= prv["ema21"] * 1.004) or (cur["low"] <= cur["ema21"] * 1.004)
             if touched and cur["close"] > cur["ema21"] and cur["close"] > cur["open"] and (43 <= cur["rsi"] <= 72) and v_ok:
                 return "LONG", "PULLBACK"
         
-        # Сценарий 2: Пробой боковика на объеме (ловит импульсы вроде входа по 73.0)
         box_high = recent["high"].max()
         if (cur["close"] > box_high) and (prv["close"] <= box_high) and (cur["close"] > cur["open"]):
             if (cur["ema9"] > cur["ema21"]) and (52 <= cur["rsi"] <= 74) and v_impulse:
@@ -135,13 +132,11 @@ def check_setup(df15, t1h):
 
     # --- ШОРТ ---
     if t1h == "SHORT":
-        # Сценарий 1: Откат к EMA 21
         if cur["close"] < cur["ema9"]:
-            touched = (prv["high"] >= prv["ema21"] * 0.996) or (cur["high"] >= prv["ema21"] * 0.996)
+            touched = (prv["high"] >= prv["ema21"] * 0.996) or (cur["high"] >= cur["ema21"] * 0.996)
             if touched and cur["close"] < cur["ema21"] and cur["close"] < cur["open"] and (28 <= cur["rsi"] <= 57) and v_ok:
                 return "SHORT", "PULLBACK"
                 
-        # Сценарий 2: Пробой поддержки вниз на объеме
         box_low = recent["low"].min()
         if (cur["close"] < box_low) and (prv["close"] >= box_low) and (cur["close"] < cur["open"]):
             if (cur["ema9"] < cur["ema21"]) and (26 <= cur["rsi"] <= 48) and v_impulse:
@@ -229,8 +224,16 @@ def run_live():
             send_tg(cap, chart)
             st["sent_signals"][key] = int(time.time())
             
+    # Безопасная очистка старых записей (учитывает и числа, и старый текстовый формат)
     cutoff = int(time.time()) - 86400
-    st["sent_signals"] = {k: v for k, v in st["sent_signals"].items() if v > cutoff}
+    clean_signals = {}
+    for k, v in st["sent_signals"].items():
+        if isinstance(v, (int, float)) and v > cutoff:
+            clean_signals[k] = int(v)
+        elif isinstance(v, str) and v.isdigit() and int(v) > cutoff:
+            clean_signals[k] = int(v)
+    st["sent_signals"] = clean_signals
+    
     save_state(st)
     print(f"Проверка завершена. Найдено сигналов: {signals_found}")
 
