@@ -26,6 +26,8 @@ MIRRORS = [
 
 def wait_for_candle_close():
     """Если скрипт запустился за 1-2 минуты до конца 15-минутки, ждём её закрытия."""
+    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        return
     now = time.time()
     rem = 900 - (now % 900)
     if 0 < rem <= 120:
@@ -240,18 +242,19 @@ def run_live():
     wait_for_candle_close()
     st = load_state()
     now_ts = int(time.time())
+    is_manual = (
+        os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+        or os.environ.get("BOT_MODE", "").lower() in ("test", "manual", "debug")
+    )
 
     df_btc = fetch_candles("BTCUSDT", "1h", 250)
     btc_t = trend_1h(add_ind(df_btc).iloc[-2]) if df_btc is not None else "FLAT"
     print(f"Старт проверки. Тренд BTC (1H): {btc_t}", flush=True)
 
     found_signals = []
+    summary_lines = []
 
     for sym in SYMBOLS:
-        last_sent = st["sent_signals"].get(sym, 0)
-        if now_ts - last_sent < COOLDOWN_SEC:
-            continue
-
         df1 = fetch_candles(sym, "1h", 250)
         df15 = fetch_candles(sym, "15m", 150)
         if df1 is None or df15 is None:
@@ -260,6 +263,4 @@ def run_live():
         df1, df15 = add_ind(df1), add_ind(df15)
         r1, cur, prv = df1.iloc[-2], df15.iloc[-2], df15.iloc[-3]
         t1 = trend_1h(r1)
-
-        print(f"{sym}: 1H={t1} | RSI_1H={round(r1['rsi'], 1)} | RSI_15m={round(cur['rsi'], 1)}", flush=True)
 
