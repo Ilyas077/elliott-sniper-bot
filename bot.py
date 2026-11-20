@@ -15,7 +15,7 @@ SYMBOLS = [
 ]
 
 STATE_FILE = "state.json"
-COOLDOWN_SEC = 14400  # 4 часа пауза по монете, чтобы не спамить повторами
+COOLDOWN_SEC = 14400
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 TG_BASE = base64.b64decode("aHR0cHM6Ly9hcGkudGVsZWdyYW0ub3JnL2JvdA==").decode()
@@ -25,7 +25,6 @@ MIRRORS = [
 
 
 def wait_for_candle_close():
-    """Если скрипт запустился за 1-2 минуты до конца 15-минутки, ждём её закрытия."""
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
         return
     now = time.time()
@@ -105,32 +104,26 @@ def add_ind(df):
     for p in (9, 21, 50):
         df[f"ema{p}"] = df["close"].ewm(span=p, adjust=False).mean()
 
-    # RSI (14)
     d = df["close"].diff()
     up_ema = d.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
     dn_ema = (-d.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean().replace(0, 1e-9)
     df["rsi"] = 100 - (100 / (1 + up_ema / dn_ema))
 
-    # ATR (14)
     h, l, c = df["high"], df["low"], df["close"]
     df["atr"] = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1).ewm(alpha=1/14, adjust=False).mean()
 
-    # ADX (14)
     up, dn = h.diff(), -l.diff()
     pdi = 100 * pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=df.index).ewm(alpha=1/14, adjust=False).mean() / df["atr"].replace(0, 1e-9)
     mdi = 100 * pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=df.index).ewm(alpha=1/14, adjust=False).mean() / df["atr"].replace(0, 1e-9)
     df["adx"] = (100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, 1e-9)).ewm(alpha=1/14, adjust=False).mean()
 
-    # Bollinger Bands (20, 2.2) для отлова экстремумов
     sma20 = df["close"].rolling(20).mean()
     std20 = df["close"].rolling(20).std()
     df["bb_up"] = sma20 + (std20 * 2.2)
     df["bb_low"] = sma20 - (std20 * 2.2)
 
-    # Локальные пики и впадины за последние 24 свечи (6 часов на 15m)
     df["high_24"] = df["high"].rolling(24).max()
     df["low_24"] = df["low"].rolling(24).min()
-
     df["vol_sma"] = df["vol"].rolling(20).mean()
     return df
 
@@ -143,8 +136,6 @@ def trend_1h(r):
     if r["ema21"] < r["ema50"] and r["close"] < r["ema50"]:
         return "SHORT"
     return "FLAT"
-
-
 def get_trade_advice(side, t1):
     if side == t1:
         return "✅ <b>ПО ТРЕНДУ 1H:</b> высокий потенциал, можно тянуть до TP2"
@@ -160,12 +151,10 @@ def check_setup(df15, r1):
     recent = df15.iloc[-16:-3]
 
     v_spike = cur["vol"] > cur["vol_sma"] * 1.3
-
     total_range = max(cur["high"] - cur["low"], 1e-9)
     upper_wick = cur["high"] - max(cur["open"], cur["close"])
     lower_wick = min(cur["open"], cur["close"]) - cur["low"]
 
-    # --- ШОРТ НА САМОМ ХАЮ (ПИК) ---
     is_high_extreme = (cur["high"] >= cur["high_24"]) and (cur["high"] > cur["bb_up"] or prv["high"] > prv["bb_up"])
     rsi_overbought = (cur["rsi"] > 68) or (prv["rsi"] > 72)
     bear_rejection = (upper_wick > total_range * 0.4) or (cur["close"] < prv["low"] and cur["close"] < cur["open"])
@@ -173,7 +162,6 @@ def check_setup(df15, r1):
     if is_high_extreme and rsi_overbought and bear_rejection and v_spike and cur["close"] < cur["bb_up"]:
         has_div = (cur["high"] > recent["high"].max()) and (max(cur["rsi"], prv["rsi"]) < recent["rsi"].max())
         htf_extreme = r1["rsi"] > 70
-
         if has_div and htf_extreme:
             setup = "🔥 ДИВЕРГЕНЦИЯ НА ПИКЕ (15M + 1H)"
         elif has_div:
@@ -182,7 +170,6 @@ def check_setup(df15, r1):
             setup = "EXTREME HIGH REVERSAL"
         return "SHORT", setup
 
-    # --- ЛОНГ НА САМОМ ЛОУ (ДНО) ---
     is_low_extreme = (cur["low"] <= cur["low_24"]) and (cur["low"] < cur["bb_low"] or prv["low"] < prv["bb_low"])
     rsi_oversold = (cur["rsi"] < 32) or (prv["rsi"] < 28)
     bull_rejection = (lower_wick > total_range * 0.4) or (cur["close"] > prv["high"] and cur["close"] > cur["open"])
@@ -190,7 +177,6 @@ def check_setup(df15, r1):
     if is_low_extreme and rsi_oversold and bull_rejection and v_spike and cur["close"] > cur["bb_low"]:
         has_div = (cur["low"] < recent["low"].min()) and (min(cur["rsi"], prv["rsi"]) > recent["rsi"].min())
         htf_extreme = r1["rsi"] < 30
-
         if has_div and htf_extreme:
             setup = "🔥 ДИВЕРГЕНЦИЯ НА ДНЕ (15M + 1H)"
         elif has_div:
@@ -264,3 +250,77 @@ def run_live():
         r1, cur, prv = df1.iloc[-2], df15.iloc[-2], df15.iloc[-3]
         t1 = trend_1h(r1)
 
+        print(f"{sym}: 1H={t1} | RSI_1H={round(r1['rsi'], 1)} | RSI_15m={round(cur['rsi'], 1)}", flush=True)
+        summary_lines.append(f"• <b>{sym.replace('USDT', '')}:</b> {fmt_price(cur['close'])} | RSI {round(cur['rsi'])}/{round(r1['rsi'])} ({t1})")
+
+        last_sent = st["sent_signals"].get(sym, 0)
+        if now_ts - last_sent < COOLDOWN_SEC:
+            continue
+
+        side, setup = check_setup(df15, r1)
+        if side:
+            entry = fmt_price(cur["close"])
+            atr_buf = float(cur["atr"]) * 0.5
+
+            if side == "LONG":
+                sl = fmt_price(min(cur["low"], prv["low"]) - atr_buf)
+                risk = max(entry - sl, float(cur["atr"]))
+                tp1 = fmt_price(entry + risk * 1.5)
+                tp2 = fmt_price(entry + risk * 3.0)
+            else:
+                sl = fmt_price(max(cur["high"], prv["high"]) + atr_buf)
+                risk = max(sl - entry, float(cur["atr"]))
+                tp1 = fmt_price(entry - risk * 1.5)
+                tp2 = fmt_price(entry - risk * 3.0)
+
+            advice = get_trade_advice(side, t1)
+
+            cap = (
+                f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>EXTREME BOT V5 — {sym} ({side})</b>\n\n"
+                f"📌 <b>Сетап:</b> {setup}\n"
+                f"🎯 <b>Вход:</b> <code>{entry}</code>\n"
+                f"🛑 <b>Стоп-лосс:</b> <code>{sl}</code>\n"
+                f"✅ <b>Тейк 1 (1.5R):</b> <code>{tp1}</code>\n"
+                f"✅ <b>Тейк 2 (3.0R):</b> <code>{tp2}</code>\n\n"
+                f"📊 <b>RSI 15m / 1H:</b> {round(cur['rsi'], 1)} / {round(r1['rsi'], 1)}\n"
+                f"🧭 <b>1H Фон ({sym} / BTC):</b> {t1} / {btc_t}\n"
+                f"💡 {advice}"
+            )
+
+            chart = make_chart(df15, sym, side, setup, entry, sl, tp1, tp2)
+            send_tg(cap, chart)
+
+            st["sent_signals"][sym] = now_ts
+            save_state(st)
+            found_signals.append((sym, side))
+            time.sleep(1.2)
+
+    shorts = [s for s, d in found_signals if d == "SHORT"]
+    longs = [s for s, d in found_signals if d == "LONG"]
+
+    if len(shorts) >= 3:
+        send_tg(
+            f"🚨 <b>МАССОВЫЙ РАЗВОРОТ ВНИЗ (SHORT)</b>\n"
+            f"Сразу {len(shorts)} монет достигли пика: <b>{', '.join(shorts)}</b>.\n"
+            f"Высокая вероятность общего слива рынка!"
+        )
+    elif len(longs) >= 3:
+        send_tg(
+            f"🚨 <b>МАССОВЫЙ ОТСКОК ВВЕРХ (LONG)</b>\n"
+            f"Сразу {len(longs)} монет достигли дна: <b>{', '.join(longs)}</b>.\n"
+            f"Высокая вероятность общего разворота вверх!"
+        )
+
+    if not found_signals:
+        print("Экстремальных точек разворота не найдено.", flush=True)
+        if is_manual:
+            report = "\n".join(summary_lines)
+            send_tg(
+                f"✅ <b>Ручная проверка (Бот V5 на связи)</b>\n"
+                f"Тренд BTC (1H): <b>{btc_t}</b> | Экстремумов сейчас нет.\n\n"
+                f"<b>Текущий срез (Цена | RSI 15m/1H | 1H):</b>\n{report}"
+            )
+
+
+if __name__ == "__main__":
+    run_live()
