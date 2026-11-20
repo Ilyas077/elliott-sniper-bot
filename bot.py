@@ -29,7 +29,7 @@ def wait_for_candle_close():
     now = time.time()
     rem = 900 - (now % 900)
     if 0 < rem <= 120:
-        print(f"Ждём закрытия свечи: {round(rem, 1)} сек...")
+        print(f"Ждём закрытия свечи: {round(rem, 1)} сек...", flush=True)
         time.sleep(rem + 1.5)
 
 
@@ -39,7 +39,6 @@ def load_state():
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 d = json.load(f)
                 if "sent_signals" in d:
-                    # Очищаем записи старше 24 часов, чтобы файл не разрастался
                     now_ts = int(time.time())
                     d["sent_signals"] = {
                         k: v for k, v in d["sent_signals"].items()
@@ -58,7 +57,7 @@ def save_state(state):
 
 def send_tg(text, img_buf=None):
     if not TG_TOKEN or not TG_CHAT_ID:
-        print("Ошибка: не заданы TG_TOKEN или TG_CHAT_ID")
+        print("Ошибка: не заданы TG_TOKEN или TG_CHAT_ID", flush=True)
         return
     try:
         if img_buf:
@@ -74,9 +73,9 @@ def send_tg(text, img_buf=None):
                 json={"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML"},
                 timeout=10
             )
-        print(f"TG {r.status_code}: {r.text[:100]}")
+        print(f"TG {r.status_code}: {r.text[:100]}", flush=True)
     except Exception as e:
-        print(f"TG Err: {e}")
+        print(f"TG Err: {e}", flush=True)
 
 
 def fetch_candles(symbol, interval, limit=250):
@@ -94,9 +93,9 @@ def fetch_candles(symbol, interval, limit=250):
                     df[c] = df[c].astype(float)
                 return df
             else:
-                print(f"API {url} вернул статус {r.status_code} для {symbol}")
+                print(f"API {url} вернул статус {r.status_code} для {symbol}", flush=True)
         except Exception as e:
-            print(f"Ошибка запроса {symbol}: {e}")
+            print(f"Ошибка запроса {symbol}: {e}", flush=True)
     return None
 
 
@@ -144,12 +143,20 @@ def trend_1h(r):
     return "FLAT"
 
 
+def get_trade_advice(side, t1):
+    if side == t1:
+        return "✅ <b>ПО ТРЕНДУ 1H:</b> высокий потенциал, можно тянуть до TP2"
+    elif t1 == "FLAT":
+        return "⚖️ <b>ФЛЭТ 1H:</b> часть забрать на TP1, остаток в безубыток"
+    else:
+        return "⚠️ <b>КОНТРТРЕНД 1H:</b> быстрый отскок — основную часть лучше забирать на TP1"
+
+
 def check_setup(df15, r1):
     cur = df15.iloc[-2]
     prv = df15.iloc[-3]
-    recent = df15.iloc[-16:-3]  # предыдущие 13 свечей для проверки дивергенции
+    recent = df15.iloc[-16:-3]
 
-    # Кульминация объёма (на пике/дне объём выше среднего минимум в 1.3 раза)
     v_spike = cur["vol"] > cur["vol_sma"] * 1.3
 
     total_range = max(cur["high"] - cur["low"], 1e-9)
@@ -203,13 +210,11 @@ def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
         ax.plot([i, i], [r["low"], r["high"]], color=col, lw=1)
         ax.bar(i, abs(r["close"] - r["open"]), bottom=min(r["open"], r["close"]), width=0.6, color=col)
 
-    # Полосы Боллинджера и EMA 21
     ax.plot(sub.index, sub["bb_up"], color="#787b86", ls="--", lw=0.9, alpha=0.8, label="BB Upper/Lower")
     ax.plot(sub.index, sub["bb_low"], color="#787b86", ls="--", lw=0.9, alpha=0.8)
     ax.fill_between(sub.index, sub["bb_low"], sub["bb_up"], color="#787b86", alpha=0.07)
     ax.plot(sub.index, sub["ema21"], color="#ff9800", lw=1.2, label="EMA 21")
 
-    # Уровни сделки
     ax.axhline(entry, color="#ffffff", ls="--", lw=1, label=f"Entry {entry}")
     ax.axhline(sl, color="#f23645", lw=1.2, label=f"SL {sl}")
     ax.axhline(tp1, color="#089981", ls=":", lw=1.2, label=f"TP1 {tp1}")
@@ -238,12 +243,11 @@ def run_live():
 
     df_btc = fetch_candles("BTCUSDT", "1h", 250)
     btc_t = trend_1h(add_ind(df_btc).iloc[-2]) if df_btc is not None else "FLAT"
-    print(f"Старт проверки. Тренд BTC (1H): {btc_t}")
+    print(f"Старт проверки. Тренд BTC (1H): {btc_t}", flush=True)
 
     found_signals = []
 
     for sym in SYMBOLS:
-        # Проверка антиповтора (кулдаун 4 часа по монете)
         last_sent = st["sent_signals"].get(sym, 0)
         if now_ts - last_sent < COOLDOWN_SEC:
             continue
@@ -257,8 +261,5 @@ def run_live():
         r1, cur, prv = df1.iloc[-2], df15.iloc[-2], df15.iloc[-3]
         t1 = trend_1h(r1)
 
-        print(f"{sym}: 1H={t1} | RSI_1H={round(r1['rsi'], 1)} | RSI_15m={round(cur['rsi'], 1)}")
+        print(f"{sym}: 1H={t1} | RSI_1H={round(r1['rsi'], 1)} | RSI_15m={round(cur['rsi'], 1)}", flush=True)
 
-        side, setup = check_setup(df15, r1)
-        if side:
-            entry = fmt_price(cur["close"])
