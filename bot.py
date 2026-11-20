@@ -228,19 +228,29 @@ def run_live():
     wait_for_candle_close()
     st = load_state()
     now_ts = int(time.time())
-    is_manual = (
-        os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-        or os.environ.get("BOT_MODE", "").lower() in ("test", "manual", "debug")
-    )
 
     df_btc = fetch_candles("BTCUSDT", "1h", 250)
     btc_t = trend_1h(add_ind(df_btc).iloc[-2]) if df_btc is not None else "FLAT"
     print(f"Старт проверки. Тренд BTC (1H): {btc_t}", flush=True)
 
+    # Одноразовое приветствие при первом запуске (и раз в 24 часа как пульс бота)
+    last_hello = st.get("last_hello", 0)
+    if now_ts - last_hello >= 86400:
+        send_tg(
+            f"👋 <b>Бот V5 запущен и перешёл в тихий режим!</b>\n"
+            f"Интервал проверки: каждые 5 мин | Тренд BTC (1H): <b>{btc_t}</b>\n"
+            f"Теперь пишу только при появлении реальных пиков и впадин."
+        )
+        st["last_hello"] = now_ts
+        save_state(st)
+
     found_signals = []
-    summary_lines = []
 
     for sym in SYMBOLS:
+        last_sent = st["sent_signals"].get(sym, 0)
+        if now_ts - last_sent < COOLDOWN_SEC:
+            continue
+
         df1 = fetch_candles(sym, "1h", 250)
         df15 = fetch_candles(sym, "15m", 150)
         if df1 is None or df15 is None:
@@ -251,11 +261,6 @@ def run_live():
         t1 = trend_1h(r1)
 
         print(f"{sym}: 1H={t1} | RSI_1H={round(r1['rsi'], 1)} | RSI_15m={round(cur['rsi'], 1)}", flush=True)
-        summary_lines.append(f"• <b>{sym.replace('USDT', '')}:</b> {fmt_price(cur['close'])} | RSI {round(cur['rsi'])}/{round(r1['rsi'])} ({t1})")
-
-        last_sent = st["sent_signals"].get(sym, 0)
-        if now_ts - last_sent < COOLDOWN_SEC:
-            continue
 
         side, setup = check_setup(df15, r1)
         if side:
@@ -313,14 +318,8 @@ def run_live():
 
     if not found_signals:
         print("Экстремальных точек разворота не найдено.", flush=True)
-        if is_manual:
-            report = "\n".join(summary_lines)
-            send_tg(
-                f"✅ <b>Ручная проверка (Бот V5 на связи)</b>\n"
-                f"Тренд BTC (1H): <b>{btc_t}</b> | Экстремумов сейчас нет.\n\n"
-                f"<b>Текущий срез (Цена | RSI 15m/1H | 1H):</b>\n{report}"
-            )
 
 
 if __name__ == "__main__":
     run_live()
+
