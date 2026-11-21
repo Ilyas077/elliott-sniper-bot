@@ -11,7 +11,7 @@ SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "AVAXUSDT", "I
 STATE_FILE = "state.json"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 TG_BASE = base64.b64decode("aHR0cHM6Ly9hcGkudGVsZWdyYW0ub3JnL2JvdA==").decode()
-BYBIT_URL = "https://bybit.com"
+OKX_URL = "https://okx.com"
 
 def wait_for_candle_close():
     now = time.time()
@@ -48,30 +48,28 @@ def send_tg(text, img_buf=None):
     except Exception as e:
         print(f"TG Err: {e}")
 
-OKX_URL = "https://okx.com"
-
 def fetch_candles(symbol, interval, limit=250):
-    # Конвертируем "BTCUSDT" -> "BTC-USDT-SWAP" (фьючерсы OKX) и таймфреймы
     inst_id = symbol.replace("USDT", "-USDT-SWAP")
     tf_map = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
     bar = tf_map.get(interval, "1H")
     try:
         r = requests.get(OKX_URL, params={"instId": inst_id, "bar": bar, "limit": limit}, headers=HEADERS, timeout=10)
+        if r.status_code != 200:
+            print(f"HTTP {r.status_code} для {inst_id}")
+            return None
         data = r.json()
-        if r.status_code == 200 and data.get("code") == "0":
+        if data.get("code") == "0":
             rows = data["data"]
             if len(rows) > 50:
-                # OKX отдает от новых к старым [ts, o, h, l, c, vol, ...], переворачиваем [::-1]
                 df = pd.DataFrame([x[:6] for x in rows[::-1]], columns=["ts", "open", "high", "low", "close", "vol"])
                 for c in ["ts", "open", "high", "low", "close", "vol"]:
                     df[c] = df[c].astype(float)
                 return df
         else:
-            print(f"OKX err {symbol}: {data.get('msg')}")
+            print(f"OKX err {inst_id}: {data.get('msg')}")
     except Exception as e:
-        print(f"Ошибка запроса {symbol}: {e}")
+        print(f"Ошибка запроса {inst_id}: {e}")
     return None
-
 
 def add_ind(df):
     for p in (9, 21, 50):
@@ -123,7 +121,7 @@ def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
     ax.axhline(sl, color="#f23645", lw=1.2, label=f"SL {sl}")
     ax.axhline(tp1, color="#089981", ls=":", lw=1.2, label=f"TP1 {tp1}")
     ax.axhline(tp2, color="#00e676", lw=1.2, label=f"TP2 {tp2}")
-    ax.set_title(f"{sym} 1H (Bybit) | {side} ({setup})", color="white", fontsize=11)
+    ax.set_title(f"{sym} 1H (OKX) | {side} ({setup})", color="white", fontsize=11)
     ax.tick_params(colors="#b2b5be")
     ax.legend(facecolor="#1e222d", labelcolor="white", loc="upper left", fontsize=8)
     buf = io.BytesIO()
@@ -143,7 +141,7 @@ def run_live():
     wait_for_candle_close()
     st = load_state()
     if not st.get("welcome_sent"):
-        welcome_text = "🤖 <b>Signal Bot V5 запущен и подключен к Bybit!</b>\n\n⚙️ <b>Настройки:</b>\n• Таймфреймы: <b>4H</b> (тренд) + <b>1H</b> (вход)\n• Фильтр силы тренда: <b>ADX ≥ 22</b>\n• Риск-менеджмент: SL за локальный экстремум, TP1 <b>1.5R</b> / TP2 <b>3.0R</b>\n• Монет в мониторинге: <b>14</b>\n\nОжидаю закрытия свечей и формирования сетапов..."
+        welcome_text = "🤖 <b>Signal Bot V5 запущен и подключен к OKX!</b>\n\n⚙️ <b>Настройки:</b>\n• Таймфреймы: <b>4H</b> (тренд) + <b>1H</b> (вход)\n• Фильтр силы тренда: <b>ADX ≥ 22</b>\n• Риск-менеджмент: SL за локальный экстремум, TP1 <b>1.5R</b> / TP2 <b>3.0R</b>\n• Монет в мониторинге: <b>14</b>\n\nОжидаю закрытия свечей и формирования сетапов..."
         send_tg(welcome_text)
         st["welcome_sent"] = True
 
@@ -154,7 +152,7 @@ def run_live():
     else:
         btc_t = "FLAT"
 
-    print(f"Старт проверки (4H/1H Bybit). Тренд BTC (4H): {btc_t}")
+    print(f"Старт проверки (4H/1H OKX). Тренд BTC (4H): {btc_t}")
     signals_found = 0
 
     for sym in SYMBOLS:
@@ -191,7 +189,7 @@ def run_live():
             risk_pct = round((risk / entry) * 100, 2)
             signals_found += 1
             icon = "🚀🟢" if side == "LONG" else "🔻🔴"
-            cap = f"{icon} <b>SIGNAL BOT V5 — {side} ({setup})</b>\n\n🪙 <b>#{sym}</b> (1H / 4H Bybit)\n💵 Entry: <code>{entry}</code>\n🛑 SL (-{risk_pct}%): <code>{sl}</code>\n🎯 TP1 (50%, 1.5R): <code>{tp1}</code>\n🎯 TP2 (50%, 3.0R): <code>{tp2}</code>\n📊 RSI(1H): <b>{round(cur['rsi'], 1)}</b> | ADX(4H): <b>{round(r4['adx'], 1)}</b> | BTC: {btc_t}"
+            cap = f"{icon} <b>SIGNAL BOT V5 — {side} ({setup})</b>\n\n🪙 <b>#{sym}</b> (1H / 4H OKX)\n💵 Entry: <code>{entry}</code>\n🛑 SL (-{risk_pct}%): <code>{sl}</code>\n🎯 TP1 (50%, 1.5R): <code>{tp1}</code>\n🎯 TP2 (50%, 3.0R): <code>{tp2}</code>\n📊 RSI(1H): <b>{round(cur['rsi'], 1)}</b> | ADX(4H): <b>{round(r4['adx'], 1)}</b> | BTC: {btc_t}"
             send_tg(cap, make_chart(df1, sym, side, setup, entry, sl, tp1, tp2))
             st["sent_signals"][key] = int(time.time())
         time.sleep(0.2)
