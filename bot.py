@@ -249,7 +249,7 @@ def run_live():
                 tp1 = fmt_price(entry - risk)
                 tp2 = fmt_price(entry - risk * 2)
 
-                        risk_usd = round(DEPOSIT_USDT * (RISK_PCT / 100.0), 2)
+            risk_usd = round(DEPOSIT_USDT * (RISK_PCT / 100.0), 2)
             qty = round(risk_usd / risk, 4 if entry < 100 else 6)
             pos_usdt = round(qty * entry, 1)
 
