@@ -9,10 +9,9 @@ TG_TOKEN = "".join((os.environ.get("TG_TOKEN") or "").split())
 TG_CHAT_ID = "".join((os.environ.get("TG_CHAT_ID") or "").split())
 SYMBOLS = (
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-    "AVAXUSDT", "AAVEUSDT", "ARBUSDT", "JUPUSDT",
-    "LDOUSDT", "SUIUSDT", "UNIUSDT",
-    "HYPEUSDT", "LTCUSDT", "DASHUSDT"
+    "LTCUSDT", "DASHUSDT", "AVAXUSDT", "UNIUSDT", "AAVEUSDT"
 )
+
 
 
 STATE_FILE = "state.json"
