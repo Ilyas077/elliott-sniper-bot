@@ -7,11 +7,11 @@ import matplotlib.pyplot as plt
 
 TG_TOKEN = "".join((os.environ.get("TG_TOKEN") or "").split())
 TG_CHAT_ID = "".join((os.environ.get("TG_CHAT_ID") or "").split())
-SYMBOLS = [
+SYMBOLS = (
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "AVAXUSDT", "INJUSDT", "AAVEUSDT", "ARBUSDT", "JUPUSDT",
     "LDOUSDT", "SUIUSDT", "UNIUSDT", "TAOUSDT"
-]
+)
 STATE_FILE = "state.json"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 TG_BASE = base64.b64decode("aHR0cHM6Ly9hcGkudGVsZWdyYW0ub3JnL2JvdA==").decode()
@@ -31,9 +31,9 @@ def load_state():
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 d = json.load(f)
             if "sent_signals" not in d:
-                d["sent_signals"] = {}
+                d.update({"sent_signals": {}})
             if "welcome_sent" not in d:
-                d["welcome_sent"] = False
+                d.update({"welcome_sent": False})
             return d
         except Exception:
             pass
@@ -78,10 +78,12 @@ def fetch_candles(symbol, interval, limit=250):
             headers=HEADERS,
             timeout=10
         )
-        if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 50:
-            df = pd.DataFrame([x[:6] for x in r.json()], columns=["ts", "open", "high", "low", "close", "vol"])
-            for c in ["ts", "open", "high", "low", "close", "vol"]:
-                df[c] = df[c].astype(float)
+        raw = r.json()
+        if r.status_code == 200 and isinstance(raw, list) and len(raw) > 50:
+            rows = list(map(lambda x: x[:6], raw))
+            df = pd.DataFrame(rows, columns=("ts", "open", "high", "low", "close", "vol"))
+            for c in ("ts", "open", "high", "low", "close", "vol"):
+                df.loc[:, c] = df.loc[:, c].astype(float)
             return df
     except Exception as e:
         print(f"Binance Vision err {symbol}: {e}")
@@ -96,61 +98,60 @@ def fetch_candles(symbol, interval, limit=250):
             timeout=10
         )
         data = r.json()
-        if r.status_code == 200 and data.get("code") == "0" and len(data.get("data", [])) > 50:
-            rows = [x[:6] for x in data["data"][::-1]]
-            df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "vol"])
-            for c in ["ts", "open", "high", "low", "close", "vol"]:
-                df[c] = df[c].astype(float)
+        items = data.get("data", [])
+        if r.status_code == 200 and data.get("code") == "0" and len(items) > 50:
+            rows = list(map(lambda x: x[:6], items[::-1]))
+            df = pd.DataFrame(rows, columns=("ts", "open", "high", "low", "close", "vol"))
+            for c in ("ts", "open", "high", "low", "close", "vol"):
+                df.loc[:, c] = df.loc[:, c].astype(float)
             return df
     except Exception as e:
         print(f"OKX err {symbol}: {e}")
 
     print(f"Не удалось загрузить {symbol} ({interval})")
     return None
-
-
 def add_ind(df):
     for p in (9, 21, 50):
-        df[f"ema{p}"] = df["close"].ewm(span=p, adjust=False).mean()
-    d = df["close"].diff()
+        df.loc[:, f"ema{p}"] = df.loc[:, "close"].ewm(span=p, adjust=False).mean()
+    d = df.loc[:, "close"].diff()
     up_ema = d.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
     dn_ema = (-d.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean().replace(0, 1e-9)
-    df["rsi"] = 100 - (100 / (1 + up_ema / dn_ema))
+    df.loc[:, "rsi"] = 100 - (100 / (1 + up_ema / dn_ema))
 
-    h, l, c = df["high"], df["low"], df["close"]
-    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
-    df["atr"] = tr.ewm(alpha=1/14, adjust=False).mean()
+    h, l, c = df.loc[:, "high"], df.loc[:, "low"], df.loc[:, "close"]
+    tr = pd.concat((h - l, (h - c.shift()).abs(), (l - c.shift()).abs()), axis=1).max(axis=1)
+    df.loc[:, "atr"] = tr.ewm(alpha=1/14, adjust=False).mean()
 
     up, dn = h.diff(), -l.diff()
-    pdi = 100 * pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=df.index).ewm(alpha=1/14, adjust=False).mean() / df["atr"].replace(0, 1e-9)
-    mdi = 100 * pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=df.index).ewm(alpha=1/14, adjust=False).mean() / df["atr"].replace(0, 1e-9)
-    df["adx"] = (100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, 1e-9)).ewm(alpha=1/14, adjust=False).mean()
+    pdi = 100 * pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=df.index).ewm(alpha=1/14, adjust=False).mean() / df.loc[:, "atr"].replace(0, 1e-9)
+    mdi = 100 * pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=df.index).ewm(alpha=1/14, adjust=False).mean() / df.loc[:, "atr"].replace(0, 1e-9)
+    df.loc[:, "adx"] = (100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, 1e-9)).ewm(alpha=1/14, adjust=False).mean()
 
-    df["vol_sma"] = df["vol"].rolling(20).mean()
+    df.loc[:, "vol_sma"] = df.loc[:, "vol"].rolling(20).mean()
     return df
 
 
 def trend_4h(r):
-    if r["adx"] < 20:
+    if r.get("adx") < 20:
         return "FLAT"
-    if r["ema21"] > r["ema50"] and r["close"] > r["ema50"]:
+    if r.get("ema21") > r.get("ema50") and r.get("close") > r.get("ema50"):
         return "LONG"
-    if r["ema21"] < r["ema50"] and r["close"] < r["ema50"]:
+    if r.get("ema21") < r.get("ema50") and r.get("close") < r.get("ema50"):
         return "SHORT"
     return "FLAT"
 
 
 def check_setup(cur, prv, t4h):
-    v_ok = cur["vol"] > cur["vol_sma"] * 0.7
-    if t4h == "LONG" and cur["ema9"] > cur["ema21"]:
-        in_zone = (prv["low"] <= prv["ema21"] * 1.003) or (cur["low"] <= cur["ema21"] * 1.003)
-        if in_zone and cur["close"] > cur["ema50"] and cur["close"] > cur["ema21"] and cur["close"] > cur["open"]:
-            if (42 <= cur["rsi"] <= 68) and v_ok:
+    v_ok = cur.get("vol") > cur.get("vol_sma") * 0.7
+    if t4h == "LONG" and cur.get("ema9") > cur.get("ema21"):
+        in_zone = (prv.get("low") <= prv.get("ema21") * 1.003) or (cur.get("low") <= cur.get("ema21") * 1.003)
+        if in_zone and cur.get("close") > cur.get("ema50") and cur.get("close") > cur.get("ema21") and cur.get("close") > cur.get("open"):
+            if (42 <= cur.get("rsi") <= 68) and v_ok:
                 return "LONG", "PULLBACK V5"
-    if t4h == "SHORT" and cur["ema9"] < cur["ema21"]:
-        in_zone = (prv["high"] >= prv["ema21"] * 0.997) or (cur["high"] >= cur["ema21"] * 0.997)
-        if in_zone and cur["close"] < cur["ema50"] and cur["close"] < cur["ema21"] and cur["close"] < cur["open"]:
-            if (32 <= cur["rsi"] <= 58) and v_ok:
+    if t4h == "SHORT" and cur.get("ema9") < cur.get("ema21"):
+        in_zone = (prv.get("high") >= prv.get("ema21") * 0.997) or (cur.get("high") >= cur.get("ema21") * 0.997)
+        if in_zone and cur.get("close") < cur.get("ema50") and cur.get("close") < cur.get("ema21") and cur.get("close") < cur.get("open"):
+            if (32 <= cur.get("rsi") <= 58) and v_ok:
                 return "SHORT", "PULLBACK V5"
     return None, None
 
@@ -160,12 +161,12 @@ def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
     fig, ax = plt.subplots(figsize=(9, 4.5), facecolor="#131722")
     ax.set_facecolor("#131722")
     for i, r in sub.iterrows():
-        col = "#089981" if r["close"] >= r["open"] else "#f23645"
-        ax.plot([i, i], [r["low"], r["high"]], color=col, lw=1)
-        ax.bar(i, abs(r["close"] - r["open"]), bottom=min(r["open"], r["close"]), width=0.6, color=col)
-    ax.plot(sub.index, sub["ema9"], color="#2962ff", lw=1.2, label="EMA 9")
-    ax.plot(sub.index, sub["ema21"], color="#ff9800", lw=1.2, label="EMA 21")
-    ax.plot(sub.index, sub["ema50"], color="#ab47bc", lw=1.2, label="EMA 50")
+        col = "#089981" if r.get("close") >= r.get("open") else "#f23645"
+        ax.plot((i, i), (r.get("low"), r.get("high")), color=col, lw=1)
+        ax.bar(i, abs(r.get("close") - r.get("open")), bottom=min(r.get("open"), r.get("close")), width=0.6, color=col)
+    ax.plot(sub.index, sub.loc[:, "ema9"], color="#2962ff", lw=1.2, label="EMA 9")
+    ax.plot(sub.index, sub.loc[:, "ema21"], color="#ff9800", lw=1.2, label="EMA 21")
+    ax.plot(sub.index, sub.loc[:, "ema50"], color="#ab47bc", lw=1.2, label="EMA 50")
     ax.axhline(entry, color="#ffffff", ls="--", lw=1, label=f"Entry {entry}")
     ax.axhline(sl, color="#f23645", lw=1.2, label=f"SL {sl}")
     ax.axhline(tp1, color="#089981", ls=":", lw=1.2, label=f"TP1 {tp1}")
@@ -203,14 +204,16 @@ def run_live():
             "🔔 Уведомления будут приходить автоматически при появлении сетапа."
         )
         if ok:
-            st["welcome_sent"] = True
+            st.update({"welcome_sent": True})
             save_state(st)
 
     df_btc = fetch_candles("BTCUSDT", "4h", 250)
     btc_t = trend_4h(add_ind(df_btc).iloc[-2]) if df_btc is not None else "FLAT"
     print(f"Старт проверки 1H/4H. Тренд BTC (4H): {btc_t}")
 
+    sent_map = st.get("sent_signals", {})
     signals_found = 0
+
     for sym in SYMBOLS:
         df4 = fetch_candles(sym, "4h", 250)
         df1 = fetch_candles(sym, "1h", 200)
@@ -221,17 +224,17 @@ def run_live():
         r4, cur, prv = df4.iloc[-2], df1.iloc[-2], df1.iloc[-3]
         t4 = trend_4h(r4)
 
-        print(f"{sym}: 4H={t4} | ADX={round(r4['adx'], 1)} | RSI(1H)={round(cur['rsi'], 1)}")
+        print(f"{sym}: 4H={t4} | ADX={round(r4.get('adx'), 1)} | RSI(1H)={round(cur.get('rsi'), 1)}")
 
-        key = f"{sym}_{int(cur['ts'])}"
-        if key in st["sent_signals"]:
+        key = f"{sym}_{int(cur.get('ts'))}"
+        if key in sent_map:
             continue
 
         side, setup = check_setup(cur, prv, t4)
         if side and (sym == "BTCUSDT" or btc_t in (side, "FLAT")):
             signals_found += 1
-            entry = fmt_price(cur["close"])
-            risk = float(cur["atr"]) * 2.0
+            entry = fmt_price(cur.get("close"))
+            risk = float(cur.get("atr")) * 2.0
             if side == "LONG":
                 sl = fmt_price(entry - risk)
                 tp1 = fmt_price(entry + risk)
@@ -248,11 +251,18 @@ def run_live():
                 f"🛑 SL (2.0 ATR): <code>{sl}</code>\n"
                 f"🎯 TP1 (50%, 1R): <code>{tp1}</code>\n"
                 f"🎯 TP2 (50%, 2R): <code>{tp2}</code>\n"
-                f"📊 RSI (1H): <b>{round(cur['rsi'], 1)}</b> | ADX (4H): <b>{round(r4['adx'], 1)}</b> | BTC: {btc_t}"
+                f"📊 RSI (1H): <b>{round(cur.get('rsi'), 1)}</b> | ADX (4H): <b>{round(r4.get('adx'), 1)}</b> | BTC: {btc_t}"
             )
             send_tg(cap, make_chart(df1, sym, side, setup, entry, sl, tp1, tp2))
-            st["sent_signals"][key] = side
+            sent_map.update({key: side})
 
         time.sleep(0.25)
 
-    if len(st["sent_signals"]) > 100:
+    keys = list(sent_map.keys())[-100:]
+    st.update({"sent_signals": {k: sent_map.get(k) for k in keys}})
+    save_state(st)
+    print(f"Проверка завершена. Найдено сигналов: {signals_found}")
+
+
+if __name__ == "__main__":
+    run_live()
