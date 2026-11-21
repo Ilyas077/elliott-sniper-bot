@@ -86,9 +86,7 @@ def fetch_candles(symbol, interval, limit=250):
         if r.status_code == 200 and isinstance(raw, list) and len(raw) > 50:
             rows = list(map(lambda x: x[:6], raw))
             df = pd.DataFrame(rows, columns=("ts", "open", "high", "low", "close", "vol"))
-            for c in ("ts", "open", "high", "low", "close", "vol"):
-                df.loc[:, c] = df.loc[:, c].astype(float)
-            return df
+            return df.astype(float)
     except Exception as e:
         print(f"Binance Vision err {symbol}: {e}")
 
@@ -106,14 +104,13 @@ def fetch_candles(symbol, interval, limit=250):
         if r.status_code == 200 and data.get("code") == "0" and len(items) > 50:
             rows = list(map(lambda x: x[:6], items[::-1]))
             df = pd.DataFrame(rows, columns=("ts", "open", "high", "low", "close", "vol"))
-            for c in ("ts", "open", "high", "low", "close", "vol"):
-                df.loc[:, c] = df.loc[:, c].astype(float)
-            return df
+            return df.astype(float)
     except Exception as e:
         print(f"OKX err {symbol}: {e}")
 
     print(f"Не удалось загрузить {symbol} ({interval})")
     return None
+
 
 def add_ind(df):
     for p in (9, 21, 50):
