@@ -66,13 +66,12 @@ def send_tg(text, img_buf=None):
         print(f"TG Err: {e}")
 
 
-def fetch_candles(symbol, interval, limit=250):
-    base_coin = symbol.replace("USDT", "")
 
-    # 1. Binance.US REST API
+def fetch_candles(symbol, interval, limit=250):
+    # 1. Официальное зеркало рыночных данных Binance (работает без геоблоков)
     try:
         r = requests.get(
-            "https://binance.us",
+            "https://binance.vision",
             params={"symbol": symbol, "interval": interval, "limit": limit},
             headers=HEADERS,
             timeout=10
@@ -83,34 +82,44 @@ def fetch_candles(symbol, interval, limit=250):
                 df[c] = df[c].astype(float)
             return df
     except Exception as e:
-        print(f"Binance.US err {symbol}: {e}")
+        print(f"Binance Vision err {symbol}: {e}")
 
-    # 2. Coinbase Exchange REST API
+    # 2. AWS-зеркало OKX
     try:
+        inst_id = symbol.replace("USDT", "-USDT")
+        bar = interval.upper()
         r = requests.get(
-            f"https://coinbase.com{base_coin}-USD/candles",
-            params={"granularity": 3600},
+            "https://okx.com",
+            params={"instId": inst_id, "bar": bar, "limit": limit},
+            headers=HEADERS,
+            timeout=10
+        )
+        data = r.json()
+        if r.status_code == 200 and data.get("code") == "0" and len(data.get("data", [])) > 50:
+            rows = [x[:6] for x in data["data"][::-1]]
+            df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "vol"])
+            for c in ["ts", "open", "high", "low", "close", "vol"]:
+                df[c] = df[c].astype(float)
+            return df
+    except Exception as e:
+        print(f"OKX AWS err {symbol}: {e}")
+
+    # 3. MEXC REST API (формат идентичен Binance)
+    try:
+        mexc_interval = "60m" if interval == "1h" else ("4h" if interval == "4h" else interval)
+        r = requests.get(
+            "https://mexc.com",
+            params={"symbol": symbol, "interval": mexc_interval, "limit": limit},
             headers=HEADERS,
             timeout=10
         )
         if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 50:
-            df = pd.DataFrame(r.json()[::-1], columns=["ts", "low", "high", "open", "close", "vol"]).astype(float)
-            df["ts"] = df["ts"] * 1000
-            df = df[["ts", "open", "high", "low", "close", "vol"]]
-            if interval == "4h":
-                df["dt"] = pd.to_datetime(df["ts"], unit="ms")
-                df = df.set_index("dt").resample("4h").agg({
-                    "ts": "first",
-                    "open": "first",
-                    "high": "max",
-                    "low": "min",
-                    "close": "last",
-                    "vol": "sum"
-                }).dropna().reset_index(drop=True)
-            if len(df) > 50:
-                return df.tail(limit).reset_index(drop=True)
+            df = pd.DataFrame([x[:6] for x in r.json()], columns=["ts", "open", "high", "low", "close", "vol"])
+            for c in ["ts", "open", "high", "low", "close", "vol"]:
+                df[c] = df[c].astype(float)
+            return df
     except Exception as e:
-        print(f"Coinbase err {symbol}: {e}")
+        print(f"MEXC err {symbol}: {e}")
 
     print(f"Не удалось загрузить {symbol} ({interval})")
     return None
