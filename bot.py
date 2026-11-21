@@ -116,6 +116,7 @@ def fetch_candles(symbol, interval, limit=250):
     return None
 
 
+
 def add_ind(df):
     for p in (9, 21, 50):
         df[f"ema{p}"] = df["close"].ewm(span=p, adjust=False).mean()
