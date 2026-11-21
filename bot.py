@@ -51,46 +51,45 @@ def send_tg(text, img_buf=None):
 def fetch_candles(symbol, interval, limit=250):
     base_coin = symbol.replace("USDT", "")
     
-    # 1. Основной источник: Gate.io Futures (не блокирует GitHub Actions)
+    # 1. Binance.US (тот же формат, что в вашем первом коде, но разрешён для серверов США)
     try:
-        gate_sym = f"{base_coin}_USDT"
         r = requests.get(
-            "https://gateio.ws",
-            params={"contract": gate_sym, "interval": interval, "limit": limit},
-            headers={"Accept": "application/json"},
+            "https://binance.us",
+            params={"symbol": symbol, "interval": interval, "limit": limit},
+            headers={"User-Agent": "Mozilla/5.0"},
             timeout=10
         )
-        if r.status_code == 200 and r.text.strip().startswith("["):
-            rows = r.json()
-            if len(rows) > 50:
-                df = pd.DataFrame(rows)
-                df = df.rename(columns={"t": "ts", "o": "open", "h": "high", "l": "low", "c": "close", "v": "vol"})
-                df = df[["ts", "open", "high", "low", "close", "vol"]].astype(float)
-                df["ts"] = df["ts"] * 1000
-                return df
+        if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 50:
+            df = pd.DataFrame([x[:6] for x in r.json()], columns=["ts", "open", "high", "low", "close", "vol"])
+            for c in ["ts", "open", "high", "low", "close", "vol"]:
+                df[c] = df[c].astype(float)
+            return df
     except Exception as e:
-        print(f"Gate err {symbol}: {e}")
+        print(f"Binance.US err {symbol}: {e}")
 
-    # 2. Резервное зеркало: CryptoCompare (глобальный агрегатор, работает везде)
+    # 2. Coinbase Exchange (работает из США без блокировок, покрывает TAO, JUP, INJ, LDO)
     try:
-        agg = 4 if interval == "4h" else 1
         r = requests.get(
-            "https://cryptocompare.com",
-            params={"fsym": base_coin, "tsym": "USDT", "limit": limit, "aggregate": agg},
+            f"https://coinbase.com{base_coin}-USD/candles",
+            params={"granularity": 3600},  # Берём часовые свечи (300 шт)
+            headers={"User-Agent": "Mozilla/5.0"},
             timeout=10
         )
-        if r.status_code == 200 and r.text.strip().startswith("{"):
-            data = r.json()
-            if data.get("Response") == "Success":
-                rows = data["Data"]["Data"]
-                if len(rows) > 50:
-                    df = pd.DataFrame(rows)
-                    df = df.rename(columns={"time": "ts", "volumefrom": "vol"})
-                    df = df[["ts", "open", "high", "low", "close", "vol"]].astype(float)
-                    df["ts"] = df["ts"] * 1000
-                    return df
+        if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 50:
+            # Coinbase отдаёт [time, low, high, open, close, volume] от новых к старым
+            df = pd.DataFrame(r.json()[::-1], columns=["ts", "low", "high", "open", "close", "vol"]).astype(float)
+            df["ts"] = df["ts"] * 1000
+            df = df[["ts", "open", "high", "low", "close", "vol"]]
+            if interval == "4h":
+                df["dt"] = pd.to_datetime(df["ts"], unit="ms")
+                df = df.set_index("dt").resample("4h").agg({
+                    "ts": "first", "open": "first", "high": "max",
+                    "low": "min", "close": "last", "vol": "sum"
+                }).dropna().reset_index(drop=True)
+            if len(df) > 50:
+                return df.tail(limit).reset_index(drop=True)
     except Exception as e:
-        print(f"CryptoCompare err {symbol}: {e}")
+        print(f"Coinbase err {symbol}: {e}")
 
     print(f"Не удалось загрузить {symbol} ({interval})")
     return None
