@@ -1,6 +1,8 @@
 {
   "sent_signals": {
-    "UNIUSDT": 1795262314
+    "UNIUSDT": 1795262314,
+    "SOLUSDT": 1795265910,
+    "AAVEUSDT": 1795265910
   },
   "last_hello": 1795196259
 }
