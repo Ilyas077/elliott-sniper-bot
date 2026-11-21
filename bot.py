@@ -49,27 +49,52 @@ def send_tg(text, img_buf=None):
         print(f"TG Err: {e}")
 
 def fetch_candles(symbol, interval, limit=250):
-    inst_id = symbol.replace("USDT", "-USDT-SWAP")
-    tf_map = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
-    bar = tf_map.get(interval, "1H")
+    base_coin = symbol.replace("USDT", "")
+    
+    # 1. Основной источник: Gate.io Futures (не блокирует GitHub Actions)
     try:
-        r = requests.get(OKX_URL, params={"instId": inst_id, "bar": bar, "limit": limit}, headers=HEADERS, timeout=10)
-        if r.status_code != 200:
-            print(f"HTTP {r.status_code} для {inst_id}")
-            return None
-        data = r.json()
-        if data.get("code") == "0":
-            rows = data["data"]
+        gate_sym = f"{base_coin}_USDT"
+        r = requests.get(
+            "https://gateio.ws",
+            params={"contract": gate_sym, "interval": interval, "limit": limit},
+            headers={"Accept": "application/json"},
+            timeout=10
+        )
+        if r.status_code == 200 and r.text.strip().startswith("["):
+            rows = r.json()
             if len(rows) > 50:
-                df = pd.DataFrame([x[:6] for x in rows[::-1]], columns=["ts", "open", "high", "low", "close", "vol"])
-                for c in ["ts", "open", "high", "low", "close", "vol"]:
-                    df[c] = df[c].astype(float)
+                df = pd.DataFrame(rows)
+                df = df.rename(columns={"t": "ts", "o": "open", "h": "high", "l": "low", "c": "close", "v": "vol"})
+                df = df[["ts", "open", "high", "low", "close", "vol"]].astype(float)
+                df["ts"] = df["ts"] * 1000
                 return df
-        else:
-            print(f"OKX err {inst_id}: {data.get('msg')}")
     except Exception as e:
-        print(f"Ошибка запроса {inst_id}: {e}")
+        print(f"Gate err {symbol}: {e}")
+
+    # 2. Резервное зеркало: CryptoCompare (глобальный агрегатор, работает везде)
+    try:
+        agg = 4 if interval == "4h" else 1
+        r = requests.get(
+            "https://cryptocompare.com",
+            params={"fsym": base_coin, "tsym": "USDT", "limit": limit, "aggregate": agg},
+            timeout=10
+        )
+        if r.status_code == 200 and r.text.strip().startswith("{"):
+            data = r.json()
+            if data.get("Response") == "Success":
+                rows = data["Data"]["Data"]
+                if len(rows) > 50:
+                    df = pd.DataFrame(rows)
+                    df = df.rename(columns={"time": "ts", "volumefrom": "vol"})
+                    df = df[["ts", "open", "high", "low", "close", "vol"]].astype(float)
+                    df["ts"] = df["ts"] * 1000
+                    return df
+    except Exception as e:
+        print(f"CryptoCompare err {symbol}: {e}")
+
+    print(f"Не удалось загрузить {symbol} ({interval})")
     return None
+
 
 def add_ind(df):
     for p in (9, 21, 50):
