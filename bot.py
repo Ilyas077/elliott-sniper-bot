@@ -9,9 +9,10 @@ TG_TOKEN = "".join((os.environ.get("TG_TOKEN") or "").split())
 TG_CHAT_ID = "".join((os.environ.get("TG_CHAT_ID") or "").split())
 SYMBOLS = (
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-    "AVAXUSDT", "INJUSDT", "AAVEUSDT", "ARBUSDT", "JUPUSDT",
-    "LDOUSDT", "SUIUSDT", "UNIUSDT", "TAOUSDT"
+    "AVAXUSDT", "AAVEUSDT", "ARBUSDT", "JUPUSDT",
+    "LDOUSDT", "SUIUSDT", "UNIUSDT"
 )
+
 STATE_FILE = "state.json"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 TG_BASE = base64.b64decode("aHR0cHM6Ly9hcGkudGVsZWdyYW0ub3JnL2JvdA==").decode()
