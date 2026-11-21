@@ -85,7 +85,7 @@ def fetch_candles(symbol, interval, limit=250):
     except Exception as e:
         print(f"Binance.US err {symbol}: {e}")
 
-    # 2. Coinbase Exchange REST API (резервный источник для монет, которых нет на Binance.US)
+    # 2. Coinbase Exchange REST API
     try:
         r = requests.get(
             f"https://coinbase.com{base_coin}-USD/candles",
@@ -94,7 +94,6 @@ def fetch_candles(symbol, interval, limit=250):
             timeout=10
         )
         if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 50:
-            # Coinbase отдаёт [time, low, high, open, close, volume] от новых к старым
             df = pd.DataFrame(r.json()[::-1], columns=["ts", "low", "high", "open", "close", "vol"]).astype(float)
             df["ts"] = df["ts"] * 1000
             df = df[["ts", "open", "high", "low", "close", "vol"]]
@@ -161,8 +160,6 @@ def check_setup(cur, prv, t4h):
             if (32 <= cur["rsi"] <= 58) and v_ok:
                 return "SHORT", "PULLBACK V5"
     return None, None
-
-
 def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
     sub = df.tail(55).reset_index(drop=True)
     fig, ax = plt.subplots(figsize=(9, 4.5), facecolor="#131722")
@@ -255,3 +252,37 @@ def run_live():
                 if risk <= 0 or (risk / entry) > 0.045:
                     continue
                 tp1, tp2 = fmt_price(entry + risk * 1.5), fmt_price(entry + risk * 3.0)
+            else:
+                sl = fmt_price(recent_high + atr_buf)
+                risk = sl - entry
+                if risk <= 0 or (risk / entry) > 0.045:
+                    continue
+                tp1, tp2 = fmt_price(entry - risk * 1.5), fmt_price(entry - risk * 3.0)
+
+            risk_pct = round((risk / entry) * 100, 2)
+            signals_found += 1
+            icon = "🚀🟢" if side == "LONG" else "🔻🔴"
+            cap = (
+                f"{icon} <b>SIGNAL BOT V5 — {side} ({setup})</b>\n\n"
+                f"🪙 <b>#{sym}</b> (1H / 4H OKX)\n"
+                f"💵 Entry: <code>{entry}</code>\n"
+                f"🛑 SL (-{risk_pct}%): <code>{sl}</code>\n"
+                f"🎯 TP1 (50%, 1.5R): <code>{tp1}</code>\n"
+                f"🎯 TP2 (50%, 3.0R): <code>{tp2}</code>\n"
+                f"📊 RSI(1H): <b>{round(cur['rsi'], 1)}</b> | ADX(4H): <b>{round(r4['adx'], 1)}</b> | BTC: {btc_t}"
+            )
+            send_tg(cap, make_chart(df1, sym, side, setup, entry, sl, tp1, tp2))
+            st["sent_signals"][key] = int(time.time())
+            time.sleep(0.2)
+
+    now_ts = int(time.time())
+    st["sent_signals"] = {
+        k: v for k, v in st["sent_signals"].items()
+        if isinstance(v, int) and (now_ts - v) < 172800
+    }
+    save_state(st)
+    print(f"Проверка завершена. Найдено сигналов: {signals_found}")
+
+
+if __name__ == "__main__":
+    run_live()
