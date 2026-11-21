@@ -17,12 +17,7 @@ SYMBOLS = [
 STATE_FILE = "state.json"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 TG_BASE = base64.b64decode("aHR0cHM6Ly9hcGkudGVsZWdyYW0ub3JnL2JvdA==").decode()
-
-MIRRORS = [
-    "https://binance.vision",
-    "https://binance.com",
-    "https://binance.com"
-]
+BYBIT_URL = "https://bybit.com"
 
 def wait_for_candle_close():
     now = time.time()
@@ -36,10 +31,12 @@ def load_state():
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 d = json.load(f)
-                return d if "sent_signals" in d else {"sent_signals": {}}
+                if "sent_signals" not in d:
+                    d["sent_signals"] = {}
+                return d
         except Exception:
             pass
-    return {"sent_signals": {}}
+    return {"sent_signals": {}, "welcome_sent": False}
 
 def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -59,16 +56,27 @@ def send_tg(text, img_buf=None):
         print(f"TG Err: {e}")
 
 def fetch_candles(symbol, interval, limit=250):
-    for url in MIRRORS:
-        try:
-            r = requests.get(url, params={"symbol": symbol, "interval": interval, "limit": limit}, headers=HEADERS, timeout=10)
-            if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 50:
-                df = pd.DataFrame([x[:6] for x in r.json()], columns=["ts", "open", "high", "low", "close", "vol"])
-                for c in ["open", "high", "low", "close", "vol"]:
+    tf_map = {"15m": "15", "1h": "60", "4h": "240", "1d": "D"}
+    bybit_tf = tf_map.get(interval, "60")
+    try:
+        r = requests.get(
+            BYBIT_URL,
+            params={"category": "linear", "symbol": symbol, "interval": bybit_tf, "limit": limit},
+            headers=HEADERS,
+            timeout=10
+        )
+        data = r.json()
+        if r.status_code == 200 and data.get("retCode") == 0:
+            rows = data["result"]["list"]
+            if len(rows) > 50:
+                df = pd.DataFrame([x[:6] for x in rows[::-1]], columns=["ts", "open", "high", "low", "close", "vol"])
+                for c in ["ts", "open", "high", "low", "close", "vol"]:
                     df[c] = df[c].astype(float)
                 return df
-        except Exception as e:
-            print(f"Ошибка {symbol}: {e}")
+        else:
+            print(f"Bybit err {symbol}: {data.get('retMsg')}")
+    except Exception as e:
+        print(f"Ошибка запроса {symbol}: {e}")
     return None
 
 def add_ind(df):
@@ -126,7 +134,7 @@ def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
     ax.axhline(sl, color="#f23645", lw=1.2, label=f"SL {sl}")
     ax.axhline(tp1, color="#089981", ls=":", lw=1.2, label=f"TP1 {tp1}")
     ax.axhline(tp2, color="#00e676", lw=1.2, label=f"TP2 {tp2}")
-    ax.set_title(f"{sym} 1H | {side} ({setup})", color="white", fontsize=11)
+    ax.set_title(f"{sym} 1H (Bybit) | {side} ({setup})", color="white", fontsize=11)
     ax.tick_params(colors="#b2b5be")
     ax.legend(facecolor="#1e222d", labelcolor="white", loc="upper left", fontsize=8)
     buf = io.BytesIO()
@@ -145,6 +153,21 @@ def fmt_price(val):
 def run_live():
     wait_for_candle_close()
     st = load_state()
+
+    # Одноразовое приветственное сообщение при первом запуске
+    if not st.get("welcome_sent"):
+        welcome_text = (
+            "🤖 <b>Signal Bot V5 запущен и подключен к Bybit!</b>\n\n"
+            "⚙️ <b>Настройки:</b>\n"
+            "• Таймфреймы: <b>4H</b> (тренд) + <b>1H</b> (вход)\n"
+            "• Фильтр силы тренда: <b>ADX ≥ 22</b>\n"
+            "• Риск-менеджмент: SL за локальный экстремум, TP1 <b>1.5R</b> / TP2 <b>3.0R</b>\n"
+            "• Монет в мониторинге: <b>14</b>\n\n"
+            "Ожидаю закрытия свечей и формирования сетапов..."
+        )
+        send_tg(welcome_text)
+        st["welcome_sent"] = True
+
     df_btc_4h = fetch_candles("BTCUSDT", "4h", 250)
     if df_btc_4h is not None:
         df_btc_4h = add_ind(df_btc_4h)
@@ -152,7 +175,7 @@ def run_live():
     else:
         btc_t = "FLAT"
 
-    print(f"Старт проверки (4H/1H). Тренд BTC (4H): {btc_t}")
+    print(f"Старт проверки (4H/1H Bybit). Тренд BTC (4H): {btc_t}")
     signals_found = 0
 
     for sym in SYMBOLS:
@@ -195,17 +218,13 @@ def run_live():
             risk_pct = round((risk / entry) * 100, 2)
             signals_found += 1
             icon = "🚀🟢" if side == "LONG" else "🔻🔴"
-            cap = f"{icon} <b>SIGNAL BOT V5 — {side} ({setup})</b>\n\n🪙 <b>#{sym}</b> (1H / 4H)\n💵 Entry: <code>{entry}</code>\n🛑 SL (-{risk_pct}%): <code>{sl}</code>\n🎯 TP1 (50%, 1.5R): <code>{tp1}</code>\n🎯 TP2 (50%, 3.0R): <code>{tp2}</code>\n📊 RSI(1H): <b>{round(cur['rsi'], 1)}</b> | ADX(4H): <b>{round(r4['adx'], 1)}</b> | BTC: {btc_t}"
+            cap = f"{icon} <b>SIGNAL BOT V5 — {side} ({setup})</b>\n\n🪙 <b>#{sym}</b> (1H / 4H Bybit)\n💵 Entry: <code>{entry}</code>\n🛑 SL (-{risk_pct}%): <code>{sl}</code>\n🎯 TP1 (50%, 1.5R): <code>{tp1}</code>\n🎯 TP2 (50%, 3.0R): <code>{tp2}</code>\n📊 RSI(1H): <b>{round(cur['rsi'], 1)}</b> | ADX(4H): <b>{round(r4['adx'], 1)}</b> | BTC: {btc_t}"
 
             send_tg(cap, make_chart(df1, sym, side, setup, entry, sl, tp1, tp2))
             st["sent_signals"][key] = int(time.time())
 
-        time.sleep(0.25)
+        time.sleep(0.2)
 
     now_ts = int(time.time())
     st["sent_signals"] = {k: v for k, v in st["sent_signals"].items() if isinstance(v, int) and (now_ts - v) < 172800}
     save_state(st)
-    print(f"Проверка завершена. Найдено сигналов: {signals_found}")
-
-if __name__ == "__main__":
-    run_live()
