@@ -10,8 +10,10 @@ TG_CHAT_ID = "".join((os.environ.get("TG_CHAT_ID") or "").split())
 SYMBOLS = (
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "AVAXUSDT", "AAVEUSDT", "ARBUSDT", "JUPUSDT",
-    "LDOUSDT", "SUIUSDT", "UNIUSDT"
+    "LDOUSDT", "SUIUSDT", "UNIUSDT",
+    "HYPEUSDT", "LTCUSDT", "DASHUSDT"
 )
+
 
 STATE_FILE = "state.json"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
@@ -247,15 +249,22 @@ def run_live():
                 tp1 = fmt_price(entry - risk)
                 tp2 = fmt_price(entry - risk * 2)
 
+                        risk_usd = round(DEPOSIT_USDT * (RISK_PCT / 100.0), 2)
+            qty = round(risk_usd / risk, 4 if entry < 100 else 6)
+            pos_usdt = round(qty * entry, 1)
+
             cap = (
                 f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>SIGNAL BOT V5 — {side} ({setup})</b>\n\n"
                 f"🪙 <b>#{sym}</b> (1H / 4H)\n"
                 f"💵 Entry: <code>{entry}</code>\n"
                 f"🛑 SL (2.0 ATR): <code>{sl}</code>\n"
                 f"🎯 TP1 (50%, 1R): <code>{tp1}</code>\n"
-                f"🎯 TP2 (50%, 2R): <code>{tp2}</code>\n"
+                f"🎯 TP2 (50%, 2R): <code>{tp2}</code>\n\n"
+                f"💼 <b>Риск-менеджмент ({RISK_PCT}% = ${risk_usd}):</b>\n"
+                f"📦 Объём входа: <code>{qty}</code> {sym.replace('USDT', '')} (~<b>${pos_usdt}</b>)\n"
                 f"📊 RSI (1H): <b>{round(cur.get('rsi'), 1)}</b> | ADX (4H): <b>{round(r4.get('adx'), 1)}</b> | BTC: {btc_t}"
             )
+
             send_tg(cap, make_chart(df1, sym, side, setup, entry, sl, tp1, tp2))
             sent_map.update({key: side})
 
