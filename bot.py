@@ -71,7 +71,6 @@ def send_tg(text, img_buf=None):
 
 
 def fetch_candles(symbol, interval, limit=250):
-    # 1. Рабочее зеркало рыночных данных Binance (без геоблока США)
     try:
         r = requests.get(
             "https://binance.vision",
@@ -87,7 +86,6 @@ def fetch_candles(symbol, interval, limit=250):
     except Exception as e:
         print(f"Binance Vision err {symbol}: {e}")
 
-    # 2. Запасной источник: OKX Public API
     try:
         inst_id = symbol.replace("USDT", "-USDT")
         bar = "1H" if interval == "1h" else ("4H" if interval == "4h" else interval)
@@ -106,23 +104,6 @@ def fetch_candles(symbol, interval, limit=250):
             return df
     except Exception as e:
         print(f"OKX err {symbol}: {e}")
-
-    # 3. Запасной источник: MEXC API
-    try:
-        mexc_interval = "60m" if interval == "1h" else ("4h" if interval == "4h" else interval)
-        r = requests.get(
-            "https://mexc.com",
-            params={"symbol": symbol, "interval": mexc_interval, "limit": limit},
-            headers=HEADERS,
-            timeout=10
-        )
-        if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 50:
-            df = pd.DataFrame([x[:6] for x in r.json()], columns=["ts", "open", "high", "low", "close", "vol"])
-            for c in ["ts", "open", "high", "low", "close", "vol"]:
-                df[c] = df[c].astype(float)
-            return df
-    except Exception as e:
-        print(f"MEXC err {symbol}: {e}")
 
     print(f"Не удалось загрузить {symbol} ({interval})")
     return None
@@ -214,7 +195,6 @@ def run_live():
     wait_for_candle_close()
     st = load_state()
 
-    # Одноразовое приветственное сообщение при первом успешном запуске
     if not st.get("welcome_sent"):
         ok = send_tg(
             "👋 <b>Бот Signal Bot V5 запущен и подключён!</b>\n\n"
@@ -253,3 +233,26 @@ def run_live():
             entry = fmt_price(cur["close"])
             risk = float(cur["atr"]) * 2.0
             if side == "LONG":
+                sl = fmt_price(entry - risk)
+                tp1 = fmt_price(entry + risk)
+                tp2 = fmt_price(entry + risk * 2)
+            else:
+                sl = fmt_price(entry + risk)
+                tp1 = fmt_price(entry - risk)
+                tp2 = fmt_price(entry - risk * 2)
+
+            cap = (
+                f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>SIGNAL BOT V5 — {side} ({setup})</b>\n\n"
+                f"🪙 <b>#{sym}</b> (1H / 4H)\n"
+                f"💵 Entry: <code>{entry}</code>\n"
+                f"🛑 SL (2.0 ATR): <code>{sl}</code>\n"
+                f"🎯 TP1 (50%, 1R): <code>{tp1}</code>\n"
+                f"🎯 TP2 (50%, 2R): <code>{tp2}</code>\n"
+                f"📊 RSI (1H): <b>{round(cur['rsi'], 1)}</b> | ADX (4H): <b>{round(r4['adx'], 1)}</b> | BTC: {btc_t}"
+            )
+            send_tg(cap, make_chart(df1, sym, side, setup, entry, sl, tp1, tp2))
+            st["sent_signals"][key] = side
+
+        time.sleep(0.25)
+
+    if len(st["sent_signals"]) > 100:
