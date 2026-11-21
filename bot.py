@@ -48,24 +48,30 @@ def send_tg(text, img_buf=None):
     except Exception as e:
         print(f"TG Err: {e}")
 
+OKX_URL = "https://okx.com"
+
 def fetch_candles(symbol, interval, limit=250):
-    tf_map = {"15m": "15", "1h": "60", "4h": "240", "1d": "D"}
-    bybit_tf = tf_map.get(interval, "60")
+    # Конвертируем "BTCUSDT" -> "BTC-USDT-SWAP" (фьючерсы OKX) и таймфреймы
+    inst_id = symbol.replace("USDT", "-USDT-SWAP")
+    tf_map = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
+    bar = tf_map.get(interval, "1H")
     try:
-        r = requests.get(BYBIT_URL, params={"category": "linear", "symbol": symbol, "interval": bybit_tf, "limit": limit}, headers=HEADERS, timeout=10)
+        r = requests.get(OKX_URL, params={"instId": inst_id, "bar": bar, "limit": limit}, headers=HEADERS, timeout=10)
         data = r.json()
-        if r.status_code == 200 and data.get("retCode") == 0:
-            rows = data["result"]["list"]
+        if r.status_code == 200 and data.get("code") == "0":
+            rows = data["data"]
             if len(rows) > 50:
+                # OKX отдает от новых к старым [ts, o, h, l, c, vol, ...], переворачиваем [::-1]
                 df = pd.DataFrame([x[:6] for x in rows[::-1]], columns=["ts", "open", "high", "low", "close", "vol"])
                 for c in ["ts", "open", "high", "low", "close", "vol"]:
                     df[c] = df[c].astype(float)
                 return df
         else:
-            print(f"Bybit err {symbol}: {data.get('retMsg')}")
+            print(f"OKX err {symbol}: {data.get('msg')}")
     except Exception as e:
         print(f"Ошибка запроса {symbol}: {e}")
     return None
+
 
 def add_ind(df):
     for p in (9, 21, 50):
