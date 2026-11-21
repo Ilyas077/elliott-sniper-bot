@@ -7,58 +7,45 @@ import matplotlib.pyplot as plt
 
 TG_TOKEN = "".join((os.environ.get("TG_TOKEN") or "").split())
 TG_CHAT_ID = "".join((os.environ.get("TG_CHAT_ID") or "").split())
-
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "AVAXUSDT", "INJUSDT", "AAVEUSDT", "ARBUSDT", "JUPUSDT",
     "LDOUSDT", "SUIUSDT", "UNIUSDT", "TAOUSDT"
 ]
-
 STATE_FILE = "state.json"
-COOLDOWN_SEC = 14400
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 TG_BASE = base64.b64decode("aHR0cHM6Ly9hcGkudGVsZWdyYW0ub3JnL2JvdA==").decode()
 MIRRORS = [
+    
     base64.b64decode("aHR0cHM6Ly9kYXRhLWFwaS5iaW5hbmNlLnZpc2lvbi9hcGkvdjMva2xpbmVz").decode()
 ]
 
-
 def wait_for_candle_close():
-    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        return
+    """Если скрипт запустился за 1-2 минуты до конца 15-минутки, ждём её закрытия."""
     now = time.time()
     rem = 900 - (now % 900)
     if 0 < rem <= 120:
-        print(f"Ждём закрытия свечи: {round(rem, 1)} сек...", flush=True)
-        time.sleep(rem + 1.5)
-
+        print(f"Ждём закрытия свечи: {round(rem, 1)} сек...")
+        time.sleep(rem + 1.5)  # +1.5 сек, чтобы биржа успела сформировать новую свечу
 
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 d = json.load(f)
-                if "sent_signals" in d:
-                    now_ts = int(time.time())
-                    d["sent_signals"] = {
-                        k: v for k, v in d["sent_signals"].items()
-                        if now_ts - v < 86400
-                    }
-                    return d
+                return d if "sent_signals" in d else {"sent_signals": {}}
         except Exception:
             pass
     return {"sent_signals": {}}
-
 
 def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-
 def send_tg(text, img_buf=None):
     if not TG_TOKEN or not TG_CHAT_ID:
-        print("Ошибка: не заданы TG_TOKEN или TG_CHAT_ID", flush=True)
+        print("Ошибка: не заданы TG_TOKEN или TG_CHAT_ID")
         return
     try:
         if img_buf:
@@ -74,10 +61,9 @@ def send_tg(text, img_buf=None):
                 json={"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML"},
                 timeout=10
             )
-        print(f"TG {r.status_code}: {r.text[:100]}", flush=True)
+        print(f"TG {r.status_code}: {r.text[:100]}")
     except Exception as e:
-        print(f"TG Err: {e}", flush=True)
-
+        print(f"TG Err: {e}")
 
 def fetch_candles(symbol, interval, limit=250):
     for url in MIRRORS:
@@ -88,47 +74,37 @@ def fetch_candles(symbol, interval, limit=250):
                 headers=HEADERS,
                 timeout=10
             )
-            if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 30:
+            if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 20:
                 df = pd.DataFrame([x[:6] for x in r.json()], columns=["ts", "open", "high", "low", "close", "vol"])
                 for c in ["open", "high", "low", "close", "vol"]:
                     df[c] = df[c].astype(float)
                 return df
             else:
-                print(f"API {url} вернул статус {r.status_code} для {symbol}", flush=True)
+                print(f"API {url} вернул статус {r.status_code} для {symbol}")
         except Exception as e:
-            print(f"Ошибка запроса {symbol}: {e}", flush=True)
+            print(f"Ошибка запроса {symbol}: {e}")
     return None
-
 
 def add_ind(df):
     for p in (9, 21, 50):
         df[f"ema{p}"] = df["close"].ewm(span=p, adjust=False).mean()
-
     d = df["close"].diff()
     up_ema = d.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
     dn_ema = (-d.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean().replace(0, 1e-9)
     df["rsi"] = 100 - (100 / (1 + up_ema / dn_ema))
-
+    
     h, l, c = df["high"], df["low"], df["close"]
     df["atr"] = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1).ewm(alpha=1/14, adjust=False).mean()
-
+    
     up, dn = h.diff(), -l.diff()
     pdi = 100 * pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=df.index).ewm(alpha=1/14, adjust=False).mean() / df["atr"].replace(0, 1e-9)
     mdi = 100 * pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=df.index).ewm(alpha=1/14, adjust=False).mean() / df["atr"].replace(0, 1e-9)
     df["adx"] = (100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, 1e-9)).ewm(alpha=1/14, adjust=False).mean()
-
-    sma20 = df["close"].rolling(20).mean()
-    std20 = df["close"].rolling(20).std()
-    df["bb_up"] = sma20 + (std20 * 2.2)
-    df["bb_low"] = sma20 - (std20 * 2.2)
-
-    df["high_24"] = df["high"].rolling(24).max()
-    df["low_24"] = df["low"].rolling(24).min()
     df["vol_sma"] = df["vol"].rolling(20).mean()
     return df
 
-
 def trend_1h(r):
+    # Оптимизированный фильтр тренда: ловит движение раньше
     if r["adx"] < 18:
         return "FLAT"
     if r["ema21"] > r["ema50"] and r["close"] > r["ema50"]:
@@ -136,82 +112,42 @@ def trend_1h(r):
     if r["ema21"] < r["ema50"] and r["close"] < r["ema50"]:
         return "SHORT"
     return "FLAT"
-def get_trade_advice(side, t1):
-    if side == t1:
-        return "✅ <b>ПО ТРЕНДУ 1H:</b> высокий потенциал, можно тянуть до TP2"
-    elif t1 == "FLAT":
-        return "⚖️ <b>ФЛЭТ 1H:</b> часть забрать на TP1, остаток в безубыток"
-    else:
-        return "⚠️ <b>КОНТРТРЕНД 1H:</b> быстрый отскок — основную часть лучше забирать на TP1"
 
-
-def check_setup(df15, r1):
-    cur = df15.iloc[-2]
-    prv = df15.iloc[-3]
-    recent = df15.iloc[-16:-3]
-
-    v_spike = cur["vol"] > cur["vol_sma"] * 1.3
-    total_range = max(cur["high"] - cur["low"], 1e-9)
-    upper_wick = cur["high"] - max(cur["open"], cur["close"])
-    lower_wick = min(cur["open"], cur["close"]) - cur["low"]
-
-    is_high_extreme = (cur["high"] >= cur["high_24"]) and (cur["high"] > cur["bb_up"] or prv["high"] > prv["bb_up"])
-    rsi_overbought = (cur["rsi"] > 68) or (prv["rsi"] > 72)
-    bear_rejection = (upper_wick > total_range * 0.4) or (cur["close"] < prv["low"] and cur["close"] < cur["open"])
-
-    if is_high_extreme and rsi_overbought and bear_rejection and v_spike and cur["close"] < cur["bb_up"]:
-        has_div = (cur["high"] > recent["high"].max()) and (max(cur["rsi"], prv["rsi"]) < recent["rsi"].max())
-        htf_extreme = r1["rsi"] > 70
-        if has_div and htf_extreme:
-            setup = "🔥 ДИВЕРГЕНЦИЯ НА ПИКЕ (15M + 1H)"
-        elif has_div:
-            setup = "⚡ МЕДВЕЖЬЯ ДИВЕРГЕНЦИЯ"
-        else:
-            setup = "EXTREME HIGH REVERSAL"
-        return "SHORT", setup
-
-    is_low_extreme = (cur["low"] <= cur["low_24"]) and (cur["low"] < cur["bb_low"] or prv["low"] < prv["bb_low"])
-    rsi_oversold = (cur["rsi"] < 32) or (prv["rsi"] < 28)
-    bull_rejection = (lower_wick > total_range * 0.4) or (cur["close"] > prv["high"] and cur["close"] > cur["open"])
-
-    if is_low_extreme and rsi_oversold and bull_rejection and v_spike and cur["close"] > cur["bb_low"]:
-        has_div = (cur["low"] < recent["low"].min()) and (min(cur["rsi"], prv["rsi"]) > recent["rsi"].min())
-        htf_extreme = r1["rsi"] < 30
-        if has_div and htf_extreme:
-            setup = "🔥 ДИВЕРГЕНЦИЯ НА ДНЕ (15M + 1H)"
-        elif has_div:
-            setup = "⚡ БЫЧЬЯ ДИВЕРГЕНЦИЯ"
-        else:
-            setup = "EXTREME LOW REVERSAL"
-        return "LONG", setup
-
+def check_setup(cur, prv, t1h):
+    v_ok = cur["vol"] > cur["vol_sma"] * 0.75
+    
+    # ЛОНГ: откат к EMA 21 на восходящем тренде
+    if t1h == "LONG" and cur["ema9"] > cur["ema21"]:
+        touched = (prv["low"] <= prv["ema21"] * 1.003) or (cur["low"] <= cur["ema21"] * 1.003)
+        if touched and cur["close"] > cur["ema21"] and cur["close"] > cur["open"] and (48 <= cur["rsi"] <= 70) and v_ok:
+            return "LONG", "PULLBACK V4"
+            
+    # ШОРТ: откат к EMA 21 на нисходящем тренде
+    if t1h == "SHORT" and cur["ema9"] < cur["ema21"]:
+        touched = (prv["high"] >= prv["ema21"] * 0.997) or (cur["high"] >= cur["ema21"] * 0.997)
+        if touched and cur["close"] < cur["ema21"] and cur["close"] < cur["open"] and (30 <= cur["rsi"] <= 52) and v_ok:
+            return "SHORT", "PULLBACK V4"
+            
     return None, None
-
 
 def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
     sub = df.tail(50).reset_index(drop=True)
     fig, ax = plt.subplots(figsize=(9, 4.5), facecolor="#131722")
     ax.set_facecolor("#131722")
-
     for i, r in sub.iterrows():
         col = "#089981" if r["close"] >= r["open"] else "#f23645"
         ax.plot([i, i], [r["low"], r["high"]], color=col, lw=1)
         ax.bar(i, abs(r["close"] - r["open"]), bottom=min(r["open"], r["close"]), width=0.6, color=col)
-
-    ax.plot(sub.index, sub["bb_up"], color="#787b86", ls="--", lw=0.9, alpha=0.8, label="BB Upper/Lower")
-    ax.plot(sub.index, sub["bb_low"], color="#787b86", ls="--", lw=0.9, alpha=0.8)
-    ax.fill_between(sub.index, sub["bb_low"], sub["bb_up"], color="#787b86", alpha=0.07)
+    ax.plot(sub.index, sub["ema9"], color="#2962ff", lw=1.2, label="EMA 9")
     ax.plot(sub.index, sub["ema21"], color="#ff9800", lw=1.2, label="EMA 21")
-
+    ax.plot(sub.index, sub["ema50"], color="#ab47bc", lw=1.2, label="EMA 50")
     ax.axhline(entry, color="#ffffff", ls="--", lw=1, label=f"Entry {entry}")
     ax.axhline(sl, color="#f23645", lw=1.2, label=f"SL {sl}")
     ax.axhline(tp1, color="#089981", ls=":", lw=1.2, label=f"TP1 {tp1}")
     ax.axhline(tp2, color="#00e676", lw=1.2, label=f"TP2 {tp2}")
-
-    ax.set_title(f"{sym} 15M | {side} | {setup}", color="white", fontsize=10)
+    ax.set_title(f"{sym} 15M | {side} ({setup})", color="white", fontsize=11)
     ax.tick_params(colors="#b2b5be")
     ax.legend(facecolor="#1e222d", labelcolor="white", loc="upper left", fontsize=8)
-
     buf = io.BytesIO()
     plt.tight_layout()
     plt.savefig(buf, format="png", dpi=120)
@@ -219,107 +155,64 @@ def make_chart(df, sym, side, setup, entry, sl, tp1, tp2):
     buf.seek(0)
     return buf
 
-
 def fmt_price(val):
     return round(float(val), 6 if val < 1 else 4)
-
 
 def run_live():
     wait_for_candle_close()
     st = load_state()
-    now_ts = int(time.time())
-
     df_btc = fetch_candles("BTCUSDT", "1h", 250)
     btc_t = trend_1h(add_ind(df_btc).iloc[-2]) if df_btc is not None else "FLAT"
-    print(f"Старт проверки. Тренд BTC (1H): {btc_t}", flush=True)
-
-    # Одноразовое приветствие при первом запуске (и раз в 24 часа как пульс бота)
-    last_hello = st.get("last_hello", 0)
-    if now_ts - last_hello >= 86400:
-        send_tg(
-            f"👋 <b>Бот V5 запущен и перешёл в тихий режим!</b>\n"
-            f"Интервал проверки: каждые 5 мин | Тренд BTC (1H): <b>{btc_t}</b>\n"
-            f"Теперь пишу только при появлении реальных пиков и впадин."
-        )
-        st["last_hello"] = now_ts
-        save_state(st)
-
-    found_signals = []
-
+    print(f"Старт проверки. Тренд BTC (1H): {btc_t}")
+    
+    signals_found = 0
     for sym in SYMBOLS:
-        last_sent = st["sent_signals"].get(sym, 0)
-        if now_ts - last_sent < COOLDOWN_SEC:
-            continue
-
         df1 = fetch_candles(sym, "1h", 250)
         df15 = fetch_candles(sym, "15m", 150)
         if df1 is None or df15 is None:
             continue
-
+            
         df1, df15 = add_ind(df1), add_ind(df15)
         r1, cur, prv = df1.iloc[-2], df15.iloc[-2], df15.iloc[-3]
         t1 = trend_1h(r1)
-
-        print(f"{sym}: 1H={t1} | RSI_1H={round(r1['rsi'], 1)} | RSI_15m={round(cur['rsi'], 1)}", flush=True)
-
-        side, setup = check_setup(df15, r1)
-        if side:
+        
+        print(f"{sym}: 1H={t1} | ADX={round(r1['adx'], 1)} | RSI={round(cur['rsi'], 1)}")
+        
+        key = f"{sym}_{int(cur['ts'])}"
+        if key in st["sent_signals"]:
+            continue
+            
+        side, setup = check_setup(cur, prv, t1)
+        if side and (sym == "BTCUSDT" or btc_t in (side, "FLAT")):
+            signals_found += 1
             entry = fmt_price(cur["close"])
-            atr_buf = float(cur["atr"]) * 0.5
-
+            risk = float(cur["atr"]) * 2.0
             if side == "LONG":
-                sl = fmt_price(min(cur["low"], prv["low"]) - atr_buf)
-                risk = max(entry - sl, float(cur["atr"]))
-                tp1 = fmt_price(entry + risk * 1.5)
-                tp2 = fmt_price(entry + risk * 3.0)
+                sl, tp1, tp2 = fmt_price(entry - risk), fmt_price(entry + risk), fmt_price(entry + risk * 2)
             else:
-                sl = fmt_price(max(cur["high"], prv["high"]) + atr_buf)
-                risk = max(sl - entry, float(cur["atr"]))
-                tp1 = fmt_price(entry - risk * 1.5)
-                tp2 = fmt_price(entry - risk * 3.0)
-
-            advice = get_trade_advice(side, t1)
-
+                sl, tp1, tp2 = fmt_price(entry + risk), fmt_price(entry - risk), fmt_price(entry - risk * 2)
+                
             cap = (
-                f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>EXTREME BOT V5 — {sym} ({side})</b>\n\n"
-                f"📌 <b>Сетап:</b> {setup}\n"
-                f"🎯 <b>Вход:</b> <code>{entry}</code>\n"
-                f"🛑 <b>Стоп-лосс:</b> <code>{sl}</code>\n"
-                f"✅ <b>Тейк 1 (1.5R):</b> <code>{tp1}</code>\n"
-                f"✅ <b>Тейк 2 (3.0R):</b> <code>{tp2}</code>\n\n"
-                f"📊 <b>RSI 15m / 1H:</b> {round(cur['rsi'], 1)} / {round(r1['rsi'], 1)}\n"
-                f"🧭 <b>1H Фон ({sym} / BTC):</b> {t1} / {btc_t}\n"
-                f"💡 {advice}"
+                f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>SIGNAL BOT V4 — {side} ({setup})</b>\n\n"
+                f"🪙 <b>#{sym}</b> (15M / 1H)\n"
+                f"💵 Entry: <code>{entry}</code>\n"
+                f"🛑 SL (2.0 ATR): <code>{sl}</code>\n"
+                f"🎯 TP1 (50%, 1R): <code>{tp1}</code>\n"
+                f"🎯 TP2 (50%, 2R): <code>{tp2}</code>\n"
+                f"📊 RSI: <b>{round(cur['rsi'], 1)}</b> | ADX: <b>{round(r1['adx'], 1)}</b> | BTC: {btc_t}"
             )
-
-            chart = make_chart(df15, sym, side, setup, entry, sl, tp1, tp2)
-            send_tg(cap, chart)
-
-            st["sent_signals"][sym] = now_ts
-            save_state(st)
-            found_signals.append((sym, side))
-            time.sleep(1.2)
-
-    shorts = [s for s, d in found_signals if d == "SHORT"]
-    longs = [s for s, d in found_signals if d == "LONG"]
-
-    if len(shorts) >= 3:
-        send_tg(
-            f"🚨 <b>МАССОВЫЙ РАЗВОРОТ ВНИЗ (SHORT)</b>\n"
-            f"Сразу {len(shorts)} монет достигли пика: <b>{', '.join(shorts)}</b>.\n"
-            f"Высокая вероятность общего слива рынка!"
-        )
-    elif len(longs) >= 3:
-        send_tg(
-            f"🚨 <b>МАССОВЫЙ ОТСКОК ВВЕРХ (LONG)</b>\n"
-            f"Сразу {len(longs)} монет достигли дна: <b>{', '.join(longs)}</b>.\n"
-            f"Высокая вероятность общего разворота вверх!"
-        )
-
-    if not found_signals:
-        print("Экстремальных точек разворота не найдено.", flush=True)
-
+            send_tg(cap, make_chart(df15, sym, side, setup, entry, sl, tp1, tp2))
+            st["sent_signals"][key] = side
+            
+        time.sleep(0.3)
+        
+    # Оставляем в памяти только последние 100 сигналов, чтобы файл не раздувался
+    if len(st["sent_signals"]) > 100:
+        keys = list(st["sent_signals"].keys())[-100:]
+        st["sent_signals"] = {k: st["sent_signals"][k] for k in keys}
+        
+    save_state(st)
+    print(f"Проверка завершена. Найдено сигналов: {signals_found}")
 
 if __name__ == "__main__":
     run_live()
-
