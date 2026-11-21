@@ -50,8 +50,8 @@ def send_tg(text, img_buf=None):
 
 def fetch_candles(symbol, interval, limit=250):
     base_coin = symbol.replace("USDT", "")
-    
-    # 1. Binance.US (тот же формат, что в вашем первом коде, но разрешён для серверов США)
+
+    # 1. Binance.US API
     try:
         r = requests.get(
             "https://binance.us",
@@ -67,16 +67,15 @@ def fetch_candles(symbol, interval, limit=250):
     except Exception as e:
         print(f"Binance.US err {symbol}: {e}")
 
-    # 2. Coinbase Exchange (работает из США без блокировок, покрывает TAO, JUP, INJ, LDO)
+    # 2. Coinbase Exchange API
     try:
         r = requests.get(
             f"https://coinbase.com{base_coin}-USD/candles",
-            params={"granularity": 3600},  # Берём часовые свечи (300 шт)
+            params={"granularity": 3600},
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=10
         )
         if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 50:
-            # Coinbase отдаёт [time, low, high, open, close, volume] от новых к старым
             df = pd.DataFrame(r.json()[::-1], columns=["ts", "low", "high", "open", "close", "vol"]).astype(float)
             df["ts"] = df["ts"] * 1000
             df = df[["ts", "open", "high", "low", "close", "vol"]]
@@ -93,6 +92,9 @@ def fetch_candles(symbol, interval, limit=250):
 
     print(f"Не удалось загрузить {symbol} ({interval})")
     return None
+
+  
+        
 
 
 def add_ind(df):
