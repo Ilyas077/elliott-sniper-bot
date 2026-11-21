@@ -70,10 +70,14 @@ def send_tg(text, img_buf=None):
         return False
 
 
+BINANCE_URL = base64.b64decode("aHR0cHM6Ly9kYXRhLWFwaS5iaW5hbmNlLnZpc2lvbi9hcGkvdjMva2xpbmVz").decode()
+OKX_URL = base64.b64decode("aHR0cHM6Ly93d3cub2t4LmNvbS9hcGkvdjUvbWFya2V0L2NhbmRsZXM=").decode()
+
+
 def fetch_candles(symbol, interval, limit=250):
     try:
         r = requests.get(
-            "https://binance.vision",
+            BINANCE_URL,
             params={"symbol": symbol, "interval": interval, "limit": limit},
             headers=HEADERS,
             timeout=10
@@ -92,7 +96,7 @@ def fetch_candles(symbol, interval, limit=250):
         inst_id = symbol.replace("USDT", "-USDT")
         bar = "1H" if interval == "1h" else ("4H" if interval == "4h" else interval)
         r = requests.get(
-            "https://okx.com",
+            OKX_URL,
             params={"instId": inst_id, "bar": bar, "limit": min(limit, 300)},
             headers=HEADERS,
             timeout=10
@@ -110,6 +114,7 @@ def fetch_candles(symbol, interval, limit=250):
 
     print(f"Не удалось загрузить {symbol} ({interval})")
     return None
+
 def add_ind(df):
     for p in (9, 21, 50):
         df.loc[:, f"ema{p}"] = df.loc[:, "close"].ewm(span=p, adjust=False).mean()
