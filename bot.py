@@ -252,7 +252,7 @@ def run_live():
             qty = round(risk_usd / risk, 4 if entry < 100 else 6)
             pos_usdt = round(qty * entry, 1)
 
-                        cap = (
+            cap = (
                 f"{'🚀🟢' if side == 'LONG' else '🔻🔴'} <b>SIGNAL BOT V5 — {side} ({setup})</b>\n\n"
                 f"🪙 <b>#{sym}</b> (1H / 4H)\n"
                 f"💵 Entry: <code>{entry}</code>\n"
