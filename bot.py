@@ -140,3 +140,9 @@ def trend_4h(r):
     if r.get("ema21") < r.get("ema50") and r.get("close") < r.get("ema50"):
         return "SHORT"
     return "FLAT"
+if __name__ == "__main__":
+    mode = (os.environ.get("BOT_MODE") or "live").strip().lower()
+    if mode == "backtest":
+        run_backtest()
+    else:
+        run_live()
